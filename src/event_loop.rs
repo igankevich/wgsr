@@ -3,9 +3,12 @@ use std::net::SocketAddr;
 
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
-use wgproto::Decode;
+use wgproto::DecodeWithContext;
 use wgproto::Message;
 use wgproto::Session;
+use wgproto::InputBuffer;
+use wgproto::Context;
+use wgproto::Responder;
 use wgproto::SessionIndex;
 use x25519_dalek::PublicKey;
 
@@ -81,17 +84,17 @@ impl EventLoop {
     fn process_packet(server: &mut Server, buffer: &mut [u8]) -> Result<(), Error> {
         let (n, from) = server.socket.recv_from(buffer)?;
         let packet = &buffer[..n];
-        let (message, _slice) = Message::decode_from_slice(packet)?;
+        let mut buffer = InputBuffer::new(packet);
+        let mut context = Context::new(&server.public_key);
+        let message = Message::decode_with_context(&mut buffer, &mut context)?;
         eprintln!("{:?} from {}", message.get_type(), from);
         match message {
             Message::HandshakeInitiation(message) => {
                 let sender_index = message.sender_index;
-                let result = Session::respond(
+                let result = Responder::respond(
                     server.public_key,
                     server.config.private_key.clone(),
-                    server.config.preshared_key.clone(),
-                    None,
-                    packet,
+                    &server.config.preshared_key,
                     message,
                 );
                 match result {
