@@ -30,3 +30,5 @@ jobs:
         run: cijail ./ci/lint.sh
       - name: Test
         run: cijail ./ci/test.sh
+      - name: Binaries
+        run: cijail ./ci/binaries.sh
