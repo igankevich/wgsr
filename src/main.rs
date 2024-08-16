@@ -14,7 +14,7 @@ use self::error::*;
 use self::event_loop::*;
 
 fn usage() -> &'static str {
-    "usage:\n  wgproxy [config-file]\n  wgproxy --version\n  wgproxy --help"
+    "usage:\n  wgsr [config-file]\n  wgsr --version\n  wgsr --help"
 }
 
 fn main() -> ExitCode {
@@ -47,7 +47,8 @@ fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let waker = event_loop.waker()?;
     ctrlc::set_handler(move || {
         let _ = waker.wake();
-    }).map_err(Error::other)?;
+    })
+    .map_err(Error::other)?;
     event_loop.run()?;
     Ok(())
 }
