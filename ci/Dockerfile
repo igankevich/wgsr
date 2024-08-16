@@ -19,11 +19,12 @@ ENV CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN rustup toolchain add nightly \
-    --target x86_64-unknown-linux-gnu \
-    x86_64-unknown-linux-musl
+    --target x86_64-unknown-linux-gnu
 RUN rustup toolchain add 1.80.1 \
     --target x86_64-unknown-linux-gnu \
     --component clippy rustfmt llvm-tools-preview
+RUN rustup target add --toolchain 1.80.1 \
+    x86_64-unknown-linux-musl
 RUN rustup default 1.80.1-x86_64-unknown-linux-gnu
 RUN cargo install --quiet cargo-llvm-cov
 RUN cargo install --quiet --no-default-features --features native-certs cargo-deny
