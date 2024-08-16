@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::num::NonZeroU16;
 use std::path::Path;
 
-use x25519_dalek::PublicKey;
-use x25519_dalek::StaticSecret;
+use wgproto::PrivateKey;
+use wgproto::PublicKey;
 
 use crate::format_error;
 use crate::parse_config;
@@ -19,8 +19,8 @@ impl Config {
     pub(crate) fn open(path: &Path) -> Result<Self, Error> {
         let mut servers: Vec<ServerConfig> = Vec::new();
         let mut prev_section: Option<String> = None;
-        let mut private_key: Option<StaticSecret> = None;
-        let mut preshared_key: Option<StaticSecret> = None;
+        let mut private_key: Option<PrivateKey> = None;
+        let mut preshared_key: Option<PrivateKey> = None;
         let mut public_key: Option<PublicKey> = None;
         let mut listen_port: Option<NonZeroU16> = None;
         let add_peer = |servers: &mut Vec<ServerConfig>,
@@ -44,8 +44,8 @@ impl Config {
             Ok(())
         };
         let add_server = |servers: &mut Vec<ServerConfig>,
-                          private_key: Option<StaticSecret>,
-                          preshared_key: Option<StaticSecret>,
+                          private_key: Option<PrivateKey>,
+                          preshared_key: Option<PrivateKey>,
                           listen_port: Option<NonZeroU16>|
          -> Result<(), Error> {
             match (private_key, preshared_key, listen_port) {
@@ -78,8 +78,8 @@ impl Config {
         let add = |servers: &mut Vec<ServerConfig>,
                    prev_section: Option<String>,
                    public_key: Option<PublicKey>,
-                   private_key: Option<StaticSecret>,
-                   preshared_key: Option<StaticSecret>,
+                   private_key: Option<PrivateKey>,
+                   preshared_key: Option<PrivateKey>,
                    listen_port: Option<NonZeroU16>|
          -> Result<(), Error> {
             match prev_section.as_deref() {
@@ -134,8 +134,8 @@ impl Config {
 }
 
 pub(crate) struct ServerConfig {
-    pub(crate) private_key: StaticSecret,
-    pub(crate) preshared_key: StaticSecret,
+    pub(crate) private_key: PrivateKey,
+    pub(crate) preshared_key: PrivateKey,
     pub(crate) listen_port: NonZeroU16,
     pub(crate) peers: Vec<PeerConfig>,
 }

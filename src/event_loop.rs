@@ -3,14 +3,14 @@ use std::net::SocketAddr;
 
 use mio::net::UdpSocket;
 use mio::{Events, Interest, Poll, Token, Waker};
-use wgproto::DecodeWithContext;
-use wgproto::Message;
-use wgproto::Session;
-use wgproto::InputBuffer;
 use wgproto::Context;
+use wgproto::DecodeWithContext;
+use wgproto::InputBuffer;
+use wgproto::Message;
+use wgproto::PublicKey;
 use wgproto::Responder;
+use wgproto::Session;
 use wgproto::SessionIndex;
-use x25519_dalek::PublicKey;
 
 use crate::format_error;
 use crate::Config;

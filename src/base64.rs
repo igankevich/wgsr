@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
-use x25519_dalek::PublicKey;
-use x25519_dalek::StaticSecret;
+use wgproto::PrivateKey;
+use wgproto::PublicKey;
 
 use crate::Error;
 
@@ -24,7 +24,7 @@ impl FromBase64 for PublicKey {
     }
 }
 
-impl FromBase64 for StaticSecret {
+impl FromBase64 for PrivateKey {
     fn from_base64(other: &str) -> Result<Self, Error> {
         Ok(U8_32::from_base64(other)?.into())
     }
@@ -40,7 +40,7 @@ impl ToBase64 for PublicKey {
     }
 }
 
-impl ToBase64 for StaticSecret {
+impl ToBase64 for PrivateKey {
     fn to_base64(&self) -> String {
         BASE64_ENGINE.encode(self.as_bytes())
     }
