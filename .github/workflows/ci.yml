@@ -23,6 +23,7 @@ jobs:
         https://static.crates.io/crates/
         https://index.crates.io/
         https://github.com/rustsec/advisory-db
+        https://github.com/igankevich/wgproto/
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.4
