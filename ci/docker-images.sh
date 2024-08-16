@@ -3,12 +3,10 @@
 . ./ci/preamble.sh
 
 build_docker_image() {
-    docker build \
-        --tag "$image1" --tag "$image2" \
-        --tag "$image3" --tag "$image4" \
-        - <<EOF
+    install -m0755 -D target/x86_64-unknown-linux-musl/release/wgsr "$workdir"/bin/wgsr
+    cat >"$workdir"/Dockerfile <<EOF
 FROM scratch
-COPY target/x86_64-unknown-linux-musl/release/wgsr /bin/wgsr
+COPY ./bin /bin
 LABEL org.opencontainers.image.source=https://github.com/igankevich/wgsr
 LABEL org.opencontainers.image.description="WGSR image"
 LABEL org.opencontainers.image.version=$version
@@ -16,6 +14,10 @@ LABEL org.opencontainers.image.licenses=GPL-3.0
 LABEL org.opencontainers.image.authors="Ivan Gankevich <ivan@igankevich.com>"
 CMD ["/bin/wgsr"]
 EOF
+    docker build \
+        --tag "$image1" --tag "$image2" \
+        --tag "$image3" --tag "$image4" \
+        "$workdir"
 }
 
 test_docker_image() {
