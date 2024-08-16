@@ -36,4 +36,5 @@ jobs:
       - name: Binaries
         run: cijail ./ci/binaries.sh
       - name: Docker images
-        run: cijail ./ci/docker-images.sh
+        run: env CIJAIL_ENDPOINTS="$CIJAIL_ENDPOINTS /var/run/docker.sock" cijail
+          ./ci/docker-images.sh
