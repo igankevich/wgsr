@@ -2,6 +2,7 @@
 name = "wgsr"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0"
 
 [dependencies]
 base64 = { version = "0.22.1", features = ["std", "alloc"], default-features = false }
