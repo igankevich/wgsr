@@ -1,0 +1,10 @@
+[package]
+name = "wgsr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = { version = "0.22.1", features = ["std", "alloc"], default-features = false }
+ctrlc = { version = "3.4.4", features = ["termination"], default-features = false }
+mio = { version = "1.0.1", features = ["net", "os-poll"], default-features = false }
+wgproto = { path = "../wgproto" }
