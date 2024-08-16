@@ -28,7 +28,7 @@ push_docker_image() {
     if test "$GITHUB_ACTIONS" = "true" && test "$GITHUB_REF_TYPE" = "tag"; then
         set +x
         printf '%s' "$GHCR_TOKEN" | docker login --username token --password-stdin ghcr.io
-        printf '%s' "$DOCKER_TOKEN" | docker login --username token --password-stdin docker.io
+        printf '%s' "$DOCKER_TOKEN" | docker login --username igankevich --password-stdin docker.io
         set -x
         docker push "$image1"
         docker push "$image2"
