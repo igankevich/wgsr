@@ -9,7 +9,7 @@ jobs:
       credentials:
         username: token
         password: ${{ secrets.GHCR_TOKEN }}
-      options: --cap-add SYS_PTRACE
+      options: --cap-add SYS_PTRACE --volume "/var/run/docker.sock:/var/run/docker.sock"
     permissions:
       packages: write
       contents: write
@@ -24,6 +24,8 @@ jobs:
         https://index.crates.io/
         https://github.com/rustsec/advisory-db
         https://github.com/igankevich/wgproto/
+      DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4.1.4
@@ -33,3 +35,5 @@ jobs:
         run: cijail ./ci/test.sh
       - name: Binaries
         run: cijail ./ci/binaries.sh
+      - name: Docker images
+        run: cijail ./ci/docker-images.sh

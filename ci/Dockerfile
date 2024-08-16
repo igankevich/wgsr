@@ -9,6 +9,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     libclang-dev \
     shellcheck \
     clang \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --quiet --no-cache-dir --no-input --break-system-packages lcov_cobertura==2.0.*

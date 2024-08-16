@@ -14,7 +14,7 @@ use self::error::*;
 use self::event_loop::*;
 
 fn usage() -> &'static str {
-    "usage:\n  wgproxy [config-file]\n  wgproxy --version\n  wgproxy --help"
+    "usage:\n  wgsr [config-file]\n  wgsr --version\n  wgsr --help"
 }
 
 fn main() -> ExitCode {
