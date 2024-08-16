@@ -47,7 +47,8 @@ fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let waker = event_loop.waker()?;
     ctrlc::set_handler(move || {
         let _ = waker.wake();
-    }).map_err(Error::other)?;
+    })
+    .map_err(Error::other)?;
     event_loop.run()?;
     Ok(())
 }
