@@ -3,7 +3,9 @@
 . ./ci/preamble.sh
 
 build_docker_image() {
-    install -m0755 -D target/x86_64-unknown-linux-musl/release/wgsr "$workdir"/bin/wgsr
+    install -m0755 -D -t "$workdir"/bin \
+        target/x86_64-unknown-linux-musl/release/wgsrd \
+        target/x86_64-unknown-linux-musl/release/wgsr
     cat >"$workdir"/Dockerfile <<EOF
 FROM scratch
 COPY ./bin /bin
@@ -21,6 +23,7 @@ EOF
 }
 
 test_docker_image() {
+    docker run --rm "$image1" /bin/wgsrd --version
     docker run --rm "$image1" /bin/wgsr --version
 }
 

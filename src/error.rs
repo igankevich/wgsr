@@ -2,13 +2,14 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-pub(crate) enum Error {
+pub enum Error {
     Base64,
+    Io(std::io::Error),
     Other(String),
 }
 
 impl Error {
-    pub(crate) fn other(message: impl ToString) -> Self {
+    pub fn other(message: impl ToString) -> Self {
         Self::Other(message.to_string())
     }
 }
@@ -17,6 +18,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             Self::Other(x) => write!(f, "{}", x),
+            Self::Io(x) => write!(f, "i/o error: {}", x),
             Self::Base64 => write!(f, "base64 i/o error"),
         }
     }
@@ -32,7 +34,7 @@ impl std::error::Error for Error {}
 
 impl From<std::io::Error> for Error {
     fn from(other: std::io::Error) -> Self {
-        Self::other(other)
+        Self::Io(other)
     }
 }
 
@@ -44,6 +46,18 @@ impl From<std::fmt::Error> for Error {
 
 impl From<wgproto::Error> for Error {
     fn from(other: wgproto::Error) -> Self {
+        Self::other(other)
+    }
+}
+
+impl From<bincode::error::DecodeError> for Error {
+    fn from(other: bincode::error::DecodeError) -> Self {
+        Self::other(other)
+    }
+}
+
+impl From<bincode::error::EncodeError> for Error {
+    fn from(other: bincode::error::EncodeError) -> Self {
         Self::other(other)
     }
 }

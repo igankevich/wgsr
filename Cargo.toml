@@ -6,6 +6,12 @@ license = "GPL-3.0"
 
 [dependencies]
 base64 = { version = "0.22.1", features = ["std", "alloc"], default-features = false }
+bincode = { version = "2.0.0-rc.3", features = ["std", "serde", "derive"], default-features = false }
+clap = { version = "4.5.16", features = ["std", "derive", "help", "usage"], default-features = false }
 ctrlc = { version = "3.4.4", features = ["termination"], default-features = false }
-mio = { version = "1.0.1", features = ["net", "os-poll"], default-features = false }
-wgproto = { version = "0.1.0", git = "https://github.com/igankevich/wgproto", branch = "master" }
+libc = "0.2.156"
+mio = { version = "1.0.1", features = ["net", "os-poll", "os-ext"], default-features = false }
+rand = { version = "0.8.5", features = [], default-features = false }
+rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
+wgproto = { version = "0.2.0", git = "https://github.com/igankevich/wgproto", tag = "0.2.0" }
+x25519-dalek = { version = "2.0.1", features = ["serde"] }

@@ -1,22 +1,41 @@
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::path::PathBuf;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 
-use crate::format_error;
 use crate::parse_config;
 use crate::Error;
-use crate::FromBase64;
-use crate::ToBase64;
+use wgsr::format_error;
+use wgsr::FromBase64;
+use wgsr::PeerKind;
+use wgsr::ToBase64;
+use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgsrd.conf";
+
+#[derive(Default)]
 pub(crate) struct Config {
     pub(crate) servers: Vec<ServerConfig>,
+    pub(crate) unix_socket_path: PathBuf,
 }
 
 impl Config {
     pub(crate) fn open(path: &Path) -> Result<Self, Error> {
+        match Self::do_open(path) {
+            Ok(config) => Ok(config),
+            Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Default::default())
+            }
+            Err(e) => Err(format_error!("failed to read `{}`: {}", path.display(), e)),
+        }
+    }
+
+    fn do_open(path: &Path) -> Result<Self, Error> {
         let mut servers: Vec<ServerConfig> = Vec::new();
         let mut prev_section: Option<String> = None;
         let mut private_key: Option<PrivateKey> = None;
@@ -25,16 +44,13 @@ impl Config {
         let mut listen_port: Option<NonZeroU16> = None;
         let add_peer = |servers: &mut Vec<ServerConfig>,
                         public_key: Option<PublicKey>,
-                        peer_type: PeerType|
+                        kind: PeerKind|
          -> Result<(), Error> {
             match public_key {
                 Some(public_key) => match servers.last_mut() {
                     None => return Err(format_error!("no servers defined")),
                     Some(server) => {
-                        server.peers.push(PeerConfig {
-                            public_key,
-                            peer_type,
-                        });
+                        server.peers.push(PeerConfig { public_key, kind });
                     }
                 },
                 None => {
@@ -83,16 +99,15 @@ impl Config {
                    listen_port: Option<NonZeroU16>|
          -> Result<(), Error> {
             match prev_section.as_deref() {
-                Some("Server") => add_server(servers, private_key, preshared_key, listen_port),
-                Some("Hub") => add_peer(servers, public_key, PeerType::Hub),
-                Some("Spoke") => add_peer(servers, public_key, PeerType::Spoke),
+                Some("Relay") => add_server(servers, private_key, preshared_key, listen_port),
+                Some("Hub") => add_peer(servers, public_key, PeerKind::Hub),
+                Some("Spoke") => add_peer(servers, public_key, PeerKind::Spoke),
                 Some(other) => Err(format_error!("unknown section: {}", other)),
                 // handle first section
                 None => Ok(()),
             }
         };
         parse_config(path, |section, key, value, new_section| {
-            eprintln!("{:?}.{} = {}", section, key, value);
             if new_section {
                 add(
                     &mut servers,
@@ -105,15 +120,15 @@ impl Config {
             }
             prev_section = section.map(ToString::to_string);
             match section {
-                Some("Server") => match key {
+                Some("Relay") => match key {
                     "PrivateKey" => private_key = Some(FromBase64::from_base64(value)?),
                     "ListenPort" => listen_port = Some(value.parse().map_err(Error::other)?),
                     "PresharedKey" => preshared_key = Some(FromBase64::from_base64(value)?),
-                    key => return Err(format_error!("unknown server key: `{}`", key)),
+                    key => return Err(format_error!("unknown relay key: `{}`", key)),
                 },
                 Some("Hub") | Some("Spoke") => match key {
                     "PublicKey" => public_key = Some(FromBase64::from_base64(value)?),
-                    key => return Err(format_error!("unknown key: `{}`", key)),
+                    key => return Err(format_error!("unknown hub/spoke key: `{}`", key)),
                 },
                 Some(other) => return Err(format_error!("unknown section: {}", other)),
                 None => return Err(format_error!("unknown section")),
@@ -129,10 +144,49 @@ impl Config {
             listen_port.take(),
         )?;
         validate_servers(servers.as_slice())?;
-        Ok(Self { servers })
+        Ok(Self {
+            servers,
+            unix_socket_path: DEFAULT_UNIX_SOCKET_PATH.into(),
+        })
+    }
+
+    pub(crate) fn save(&self, path: &Path) -> Result<(), Error> {
+        self.do_save(path)
+            .map_err(|e| format_error!("failed to write `{}`: {}", path.display(), e))
+    }
+
+    fn do_save(&self, path: &Path) -> Result<(), Error> {
+        self.validate()?;
+        let mut file = File::create(path)?;
+        for server in self.servers.iter() {
+            writeln!(&mut file, "[Relay]")?;
+            writeln!(&mut file, "PrivateKey = {}", server.private_key.to_base64())?;
+            writeln!(
+                &mut file,
+                "PresharedKey = {}",
+                server.preshared_key.to_base64()
+            )?;
+            writeln!(&mut file, "ListenPort = {}", server.listen_port)?;
+            writeln!(&mut file)?;
+            for peer in server.peers.iter() {
+                let section = match peer.kind {
+                    PeerKind::Hub => "Hub",
+                    PeerKind::Spoke => "Spoke",
+                };
+                writeln!(&mut file, "[{}]", section)?;
+                writeln!(&mut file, "PublicKey = {}", peer.public_key.to_base64())?;
+                writeln!(&mut file)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        validate_servers(&self.servers)
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ServerConfig {
     pub(crate) private_key: PrivateKey,
     pub(crate) preshared_key: PrivateKey,
@@ -140,24 +194,10 @@ pub(crate) struct ServerConfig {
     pub(crate) peers: Vec<PeerConfig>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PeerConfig {
     pub(crate) public_key: PublicKey,
-    pub(crate) peer_type: PeerType,
-}
-
-#[derive(PartialEq, Eq)]
-pub(crate) enum PeerType {
-    Hub,
-    Spoke,
-}
-
-impl PeerType {
-    pub(crate) fn as_str(&self) -> &str {
-        match self {
-            Self::Hub => "hub",
-            Self::Spoke => "spoke",
-        }
-    }
+    pub(crate) kind: PeerKind,
 }
 
 fn validate_servers(servers: &[ServerConfig]) -> Result<(), Error> {
@@ -179,7 +219,7 @@ fn validate_peers(peers: &[PeerConfig], server_public_key: &PublicKey) -> Result
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
     let mut hub_found = false;
     for peer in peers.iter() {
-        if peer.peer_type == PeerType::Hub {
+        if peer.kind == PeerKind::Hub {
             if hub_found {
                 return Err(format_error!("only one hub per server is supported"));
             }
@@ -197,9 +237,6 @@ fn validate_peers(peers: &[PeerConfig], server_public_key: &PublicKey) -> Result
                 peer.public_key.to_base64()
             ));
         }
-    }
-    if !hub_found {
-        return Err(format_error!("no hub found"));
     }
     Ok(())
 }

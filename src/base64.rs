@@ -5,7 +5,7 @@ use wgproto::PublicKey;
 
 use crate::Error;
 
-pub(crate) trait FromBase64 {
+pub trait FromBase64 {
     fn from_base64(other: &str) -> Result<Self, Error>
     where
         Self: Sized;
@@ -30,7 +30,7 @@ impl FromBase64 for PrivateKey {
     }
 }
 
-pub(crate) trait ToBase64 {
+pub trait ToBase64 {
     fn to_base64(&self) -> String;
 }
 
