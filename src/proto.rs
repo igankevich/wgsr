@@ -6,6 +6,7 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 
 use bincode::decode_from_slice;
 use bincode::encode_into_std_write;
@@ -22,11 +23,21 @@ pub const MAX_RESPONSE_SIZE: usize = 4096 * 16;
 #[derive(Decode, Encode)]
 pub enum Request {
     Status,
+    RelayAdd {
+        listen_port: Option<NonZeroU16>,
+        persistent: bool,
+    },
+    RelayRemove {
+        listen_port: NonZeroU16,
+        persistent: bool,
+    },
 }
 
 #[derive(Decode, Encode)]
 pub enum Response {
     Status(Result<Status, RequestError>),
+    RelayAdd(Result<NonZeroU16, RequestError>),
+    RelayRemove(Result<(), RequestError>),
 }
 
 #[derive(Decode, Encode)]
@@ -91,7 +102,7 @@ impl PeerKind {
 }
 
 #[derive(Decode, Encode)]
-pub struct RequestError(String);
+pub struct RequestError(pub String);
 
 impl Display for RequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

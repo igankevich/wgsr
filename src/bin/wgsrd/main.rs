@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use crate::Config;
+use crate::DEFAULT_CONFIGURATION_FILE_PATH;
 use wgsr::Error;
-use wgsr::DEFAULT_CONFIGURATION_FILE_PATH;
 
 use self::config::*;
 use self::config_parser::*;
@@ -43,7 +44,7 @@ fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
         libc::umask(0o077);
     }
     let config = Config::open(config_file)?;
-    let event_loop = EventLoop::new(config)?;
+    let event_loop = EventLoop::new(config, config_file.to_path_buf())?;
     let waker = event_loop.waker()?;
     ctrlc::set_handler(move || {
         let _ = waker.wake();

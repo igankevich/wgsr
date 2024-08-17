@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -7,7 +8,6 @@ use wgsr::Request;
 use wgsr::Response;
 use wgsr::Status;
 use wgsr::ToBase64;
-use wgsr::DEFAULT_CONFIGURATION_FILE_PATH;
 use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
@@ -27,14 +27,6 @@ struct Args {
     /// Print version.
     #[clap(long, action)]
     version: bool,
-    /// Configuration file path.
-    #[arg(
-        short = 'c',
-        long = "config-file",
-        value_name = "path",
-        default_value = DEFAULT_CONFIGURATION_FILE_PATH
-    )]
-    config_file: PathBuf,
     /// UNIX socket path.
     #[arg(
         short = 's',
@@ -50,7 +42,27 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Get relay status.
     Status,
+    /// Relay commands.
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RelayCommand {
+    /// Add new relay.
+    Add {
+        /// Listen port.
+        listen_port: Option<NonZeroU16>,
+    },
+    /// Remove existing relay.
+    Rm {
+        /// Listen port.
+        listen_port: NonZeroU16,
+    },
 }
 
 fn main() -> ExitCode {
@@ -64,6 +76,9 @@ fn main() -> ExitCode {
 }
 
 fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
+    unsafe {
+        libc::umask(0o077);
+    }
     let args = Args::parse();
     if args.version {
         println!("{}", env!("VERSION"));
@@ -74,11 +89,36 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             let status = match client.call(Request::Status)? {
                 Response::Status(status) => status?,
-                //_ => return Ok(ExitCode::FAILURE),
+                _ => return Ok(ExitCode::FAILURE),
             };
             print_status(&status);
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Relay { command }) => match command {
+            RelayCommand::Add { listen_port } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let listen_port = match client.call(Request::RelayAdd {
+                    listen_port,
+                    persistent: true,
+                })? {
+                    Response::RelayAdd(listen_port) => listen_port?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                println!("{}", listen_port);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Rm { listen_port } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(Request::RelayRemove {
+                    listen_port,
+                    persistent: true,
+                })? {
+                    Response::RelayRemove(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         None => Ok(ExitCode::FAILURE),
     }
 }

@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 use std::fs::create_dir_all;
+use std::fs::rename;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
+use std::path::Path;
+use std::path::PathBuf;
 
 use bincode::error::DecodeError;
 use mio::event::Event;
@@ -22,6 +26,8 @@ use wgproto::Context;
 use wgproto::DecodeWithContext;
 use wgproto::InputBuffer;
 use wgproto::Message;
+use wgproto::PresharedKey;
+use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
@@ -32,6 +38,7 @@ use wgsr::Peer;
 use wgsr::PeerKind;
 use wgsr::PeerStatus;
 use wgsr::Request;
+use wgsr::RequestError;
 use wgsr::Response;
 use wgsr::Status;
 use wgsr::ToBase64;
@@ -42,15 +49,16 @@ use crate::Config;
 use crate::ServerConfig;
 
 pub(crate) struct EventLoop {
+    config_file: PathBuf,
     poll: Poll,
-    servers: Vec<Server>,
+    servers: HashMap<u16, Server>,
     unix_server: UnixListener,
     unix_clients: HashMap<usize, UnixClient>,
 }
 
 impl EventLoop {
-    pub(crate) fn new(config: Config) -> Result<Self, Error> {
-        let mut servers: Vec<Server> = Vec::with_capacity(config.servers.len());
+    pub(crate) fn new(config: Config, config_file: PathBuf) -> Result<Self, Error> {
+        let mut servers = HashMap::with_capacity(config.servers.len());
         let poll = Poll::new()?;
         for (i, server) in config.servers.into_iter().enumerate() {
             let socket_addr =
@@ -59,15 +67,18 @@ impl EventLoop {
             let mut socket = UdpSocket::bind(socket_addr)?;
             poll.registry()
                 .register(&mut socket, Token(i), Interest::READABLE)?;
-            servers.push(Server {
-                socket_addr,
-                socket,
-                public_key: (&server.private_key).into(),
-                hub: Default::default(),
-                spokes: Default::default(),
-                other_peers: Default::default(),
-                config: server,
-            });
+            servers.insert(
+                server.listen_port.into(),
+                Server {
+                    socket_addr,
+                    socket,
+                    public_key: (&server.private_key).into(),
+                    hub: Default::default(),
+                    spokes: Default::default(),
+                    other_peers: Default::default(),
+                    config: server,
+                },
+            );
         }
         // unix socket
         if let Some(directory) = config.unix_socket_path.parent() {
@@ -77,6 +88,7 @@ impl EventLoop {
         poll.registry()
             .register(&mut unix_server, UNIX_SERVER_TOKEN, Interest::READABLE)?;
         Ok(Self {
+            config_file,
             poll,
             servers,
             unix_server,
@@ -122,12 +134,14 @@ impl EventLoop {
                         Self::process_unix_client_event(
                             event,
                             client,
-                            &self.servers,
+                            &mut self.servers,
                             &mut self.poll,
+                            self.config_file.as_path(),
                         )
                     }
                     Token(i) => {
-                        let peer = match self.servers.get_mut(i) {
+                        let port = (i - RELAY_TOKEN_MIN) as u16;
+                        let peer = match self.servers.get_mut(&port) {
                             Some(peer) => peer,
                             None => continue,
                         };
@@ -299,8 +313,9 @@ impl EventLoop {
     fn process_unix_client_event(
         event: &Event,
         client: &mut UnixClient,
-        servers: &[Server],
+        servers: &mut HashMap<u16, Server>,
         poll: &mut Poll,
+        config_file: &Path,
     ) -> Result<(), Error> {
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
@@ -308,8 +323,26 @@ impl EventLoop {
             while let Some(request) = client.read_request()? {
                 let response = match request {
                     Request::Status => Response::Status(Ok(Status {
-                        servers: servers.iter().map(Into::into).collect(),
+                        servers: servers.iter().map(|(_, v)| v.into()).collect(),
                     })),
+                    Request::RelayAdd {
+                        listen_port,
+                        persistent,
+                    } => {
+                        let response =
+                            Self::add_relay(listen_port, persistent, config_file, poll, servers)
+                                .map_err(|e| RequestError(e.to_string()));
+                        Response::RelayAdd(response)
+                    }
+                    Request::RelayRemove {
+                        listen_port,
+                        persistent,
+                    } => {
+                        let response =
+                            Self::remove_relay(listen_port, persistent, config_file, servers)
+                                .map_err(|e| RequestError(e.to_string()));
+                        Response::RelayRemove(response)
+                    }
                 };
                 client.send_response(&response)?;
             }
@@ -332,7 +365,7 @@ impl EventLoop {
             "{:<23}{:<23}{:<23}{:<23}{:<23}{:<46}",
             "Local", "Type", "Status", "Remote", "Session", "PublicKey"
         );
-        for server in self.servers.iter() {
+        for server in self.servers.values() {
             if let Some(hub) = server.hub.as_ref() {
                 eprintln!(
                     "{:<23}{:<23}{:<23}{:<23}{:<23}{}",
@@ -367,6 +400,80 @@ impl EventLoop {
             }
         }
         eprintln!("-");
+    }
+
+    fn add_relay(
+        listen_port: Option<NonZeroU16>,
+        persistent: bool,
+        config_file: &Path,
+        poll: &mut Poll,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<NonZeroU16, Error> {
+        if servers.len() == MAX_RELAYS {
+            return Err(format_error!("max. no. of relays reached"));
+        }
+        let listen_port: u16 = match listen_port {
+            Some(listen_port) => listen_port.into(),
+            None => loop {
+                let port: u16 = OsRng.gen_range(RELAY_TOKEN_MIN..(RELAY_TOKEN_MAX + 1)) as u16;
+                if !servers.contains_key(&port) {
+                    break port;
+                }
+            },
+        };
+        let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), listen_port);
+        let private_key = PrivateKey::random();
+        let preshared_key = PresharedKey::random();
+        eprintln!("listen on {}", socket_addr);
+        let mut socket = UdpSocket::bind(socket_addr)?;
+        poll.registry()
+            .register(&mut socket, Token(listen_port as usize), Interest::READABLE)?;
+        let non_zero_listen_port: NonZeroU16 = listen_port.try_into().map_err(Error::other)?;
+        let server = Server {
+            socket_addr,
+            socket,
+            public_key: (&private_key).into(),
+            hub: Default::default(),
+            spokes: Default::default(),
+            other_peers: Default::default(),
+            config: ServerConfig {
+                private_key,
+                preshared_key,
+                listen_port: non_zero_listen_port,
+                peers: Default::default(),
+            },
+        };
+        if persistent {
+            let mut config = Config::open(config_file)?;
+            config.servers.push(server.config.clone());
+            let tmp_config_file = get_tmp_file(config_file)?;
+            config.save(tmp_config_file.as_path())?;
+            rename(tmp_config_file.as_path(), config_file)?;
+        }
+        servers.insert(listen_port, server);
+        Ok(non_zero_listen_port)
+    }
+
+    fn remove_relay(
+        listen_port: NonZeroU16,
+        persistent: bool,
+        config_file: &Path,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(), Error> {
+        let port: u16 = listen_port.into();
+        if servers.remove(&port).is_none() {
+            return Err(format_error!("no relay with listen-port `{}`", listen_port));
+        }
+        if persistent {
+            let mut config = Config::open(config_file)?;
+            config
+                .servers
+                .retain(|server| server.listen_port != listen_port);
+            let tmp_config_file = get_tmp_file(config_file)?;
+            config.save(tmp_config_file.as_path())?;
+            rename(tmp_config_file.as_path(), config_file)?;
+        }
+        Ok(())
     }
 }
 
@@ -452,6 +559,17 @@ impl UnixClient {
     }
 }
 
+fn get_tmp_file(path: &Path) -> Result<PathBuf, Error> {
+    let filename = path
+        .file_name()
+        .ok_or_else(|| format_error!("invalid file path: `{}`", path.display()))?;
+    let filename = format!(".{}.tmp", Path::new(filename).display());
+    Ok(match path.parent() {
+        Some(parent) => parent.join(filename),
+        None => filename.into(),
+    })
+}
+
 const MAX_EVENTS: usize = 1024;
 const MAX_PACKET_SIZE: usize = 65535;
 const WAKE_TOKEN: Token = Token(usize::MAX);
@@ -459,3 +577,6 @@ const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 1);
 const MAX_UNIX_CLIENTS: usize = 1000;
 const UNIX_TOKEN_MAX: usize = usize::MAX - 2;
 const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
+const RELAY_TOKEN_MAX: usize = UNIX_TOKEN_MIN - 1;
+const RELAY_TOKEN_MIN: usize = 1001;
+const MAX_RELAYS: usize = RELAY_TOKEN_MAX - RELAY_TOKEN_MIN + 1;

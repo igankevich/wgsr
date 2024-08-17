@@ -4,6 +4,7 @@ use std::fmt::Formatter;
 
 pub enum Error {
     Base64,
+    Io(std::io::Error),
     Other(String),
 }
 
@@ -17,6 +18,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             Self::Other(x) => write!(f, "{}", x),
+            Self::Io(x) => write!(f, "i/o error: {}", x),
             Self::Base64 => write!(f, "base64 i/o error"),
         }
     }
@@ -32,7 +34,7 @@ impl std::error::Error for Error {}
 
 impl From<std::io::Error> for Error {
     fn from(other: std::io::Error) -> Self {
-        Self::other(other)
+        Self::Io(other)
     }
 }
 
