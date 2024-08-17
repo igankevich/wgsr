@@ -9,8 +9,6 @@ use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
 
-use bincode::decode_from_slice;
-use bincode::encode_into_std_write;
 use bincode::error::DecodeError;
 use mio::event::Event;
 use mio::net::UdpSocket;
@@ -27,18 +25,21 @@ use wgproto::Message;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
+use wgsr::format_error;
+use wgsr::EncodeDecode;
+use wgsr::Error;
 use wgsr::Peer;
 use wgsr::PeerStatus;
 use wgsr::PeerType;
 use wgsr::Request;
 use wgsr::Response;
 use wgsr::Status;
+use wgsr::ToBase64;
+use wgsr::MAX_REQUEST_SIZE;
+use wgsr::MAX_RESPONSE_SIZE;
 
-use crate::format_error;
 use crate::Config;
-use crate::Error;
 use crate::ServerConfig;
-use crate::ToBase64;
 
 pub(crate) struct EventLoop {
     poll: Poll,
@@ -303,6 +304,7 @@ impl EventLoop {
     ) -> Result<(), Error> {
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
+            client.fill_buf()?;
             while let Some(request) = client.read_request()? {
                 let response = match request {
                     Request::Status => Response::Status(Ok(Status {
@@ -421,24 +423,26 @@ impl UnixClient {
         let output_stream = UnixStream::from_std(stream);
         Ok(Self {
             fd,
-            reader: BufReader::with_capacity(MAX_UNIX_PACKET_SIZE, input_stream),
-            writer: BufWriter::with_capacity(MAX_UNIX_PACKET_SIZE, output_stream),
+            reader: BufReader::with_capacity(MAX_REQUEST_SIZE, input_stream),
+            writer: BufWriter::with_capacity(MAX_RESPONSE_SIZE, output_stream),
         })
     }
 
+    fn fill_buf(&mut self) -> Result<(), Error> {
+        self.reader.fill_buf()?;
+        Ok(())
+    }
+
     fn read_request(&mut self) -> Result<Option<Request>, Error> {
-        let buf = self.reader.fill_buf()?;
-        let (request, n): (Request, usize) =
-            match decode_from_slice(buf, bincode::config::standard()) {
-                Err(DecodeError::UnexpectedEnd { .. }) => return Ok(None),
-                other => other,
-            }?;
-        self.reader.consume(n);
-        Ok(Some(request))
+        match Request::decode(&mut self.reader) {
+            Ok(request) => Ok(Some(request)),
+            Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn send_response(&mut self, response: &Response) -> Result<(), Error> {
-        encode_into_std_write(response, &mut self.writer, bincode::config::standard())?;
+        response.encode(&mut self.writer)?;
         Ok(())
     }
 
@@ -455,4 +459,3 @@ const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 1);
 const MAX_UNIX_CLIENTS: usize = 1000;
 const UNIX_TOKEN_MAX: usize = usize::MAX - 2;
 const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
-const MAX_UNIX_PACKET_SIZE: usize = 4096 * 16;

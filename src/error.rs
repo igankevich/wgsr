@@ -2,13 +2,13 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
-pub(crate) enum Error {
+pub enum Error {
     Base64,
     Other(String),
 }
 
 impl Error {
-    pub(crate) fn other(message: impl ToString) -> Self {
+    pub fn other(message: impl ToString) -> Self {
         Self::Other(message.to_string())
     }
 }

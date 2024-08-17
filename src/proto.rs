@@ -1,11 +1,23 @@
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Read;
+use std::io::Write;
 use std::net::SocketAddr;
 
+use bincode::decode_from_slice;
+use bincode::encode_into_std_write;
+use bincode::error::DecodeError;
+use bincode::error::EncodeError;
 use bincode::Decode;
 use bincode::Encode;
 use wgproto::PublicKey;
+
+pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgsrd-socket";
+pub const MAX_REQUEST_SIZE: usize = 4096;
+pub const MAX_RESPONSE_SIZE: usize = 4096 * 16;
 
 #[derive(Decode, Encode)]
 pub enum Request {
@@ -14,7 +26,7 @@ pub enum Request {
 
 #[derive(Decode, Encode)]
 pub enum Response {
-    Status(Result<Status, Error>),
+    Status(Result<Status, RequestError>),
 }
 
 #[derive(Decode, Encode)]
@@ -77,19 +89,47 @@ impl PeerType {
         }
     }
 }
-#[derive(Decode, Encode)]
-pub struct Error(String);
 
-impl Display for Error {
+#[derive(Decode, Encode)]
+pub struct RequestError(String);
+
+impl Display for RequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl Debug for Error {
+impl Debug for RequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for RequestError {}
+
+pub trait EncodeDecode {
+    fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError>;
+    fn decode<R>(reader: &mut BufReader<R>) -> Result<Self, DecodeError>
+    where
+        Self: Sized,
+        BufReader<R>: BufRead,
+        R: Read;
+}
+
+impl<T: Encode + Decode> EncodeDecode for T {
+    fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError> {
+        encode_into_std_write(self, writer, bincode::config::standard())?;
+        Ok(())
+    }
+
+    fn decode<R>(reader: &mut BufReader<R>) -> Result<Self, DecodeError>
+    where
+        BufReader<R>: BufRead,
+        R: Read,
+    {
+        let (object, n): (Self, usize) =
+            decode_from_slice(reader.buffer(), bincode::config::standard())?;
+        reader.consume(n);
+        Ok(object)
+    }
+}

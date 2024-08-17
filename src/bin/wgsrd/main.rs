@@ -1,16 +1,14 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-mod base64;
+use wgsr::Error;
+
 mod config;
 mod config_parser;
-mod error;
 mod event_loop;
 
-use self::base64::*;
 use self::config::*;
 use self::config_parser::*;
-use self::error::*;
 use self::event_loop::*;
 
 fn usage() -> &'static str {

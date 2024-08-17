@@ -5,13 +5,14 @@ use std::path::PathBuf;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
+use wgsr::format_error;
+use wgsr::Error;
+use wgsr::FromBase64;
 use wgsr::PeerType;
+use wgsr::ToBase64;
+use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
-use crate::format_error;
 use crate::parse_config;
-use crate::Error;
-use crate::FromBase64;
-use crate::ToBase64;
 
 pub(crate) struct Config {
     pub(crate) servers: Vec<ServerConfig>,
@@ -133,7 +134,7 @@ impl Config {
         validate_servers(servers.as_slice())?;
         Ok(Self {
             servers,
-            unix_socket_path: "/tmp/.wgsrd-socket".into(),
+            unix_socket_path: DEFAULT_UNIX_SOCKET_PATH.into(),
         })
     }
 }
