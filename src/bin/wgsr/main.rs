@@ -115,7 +115,7 @@ fn print_status(status: &Status) {
             println!(
                 "{:<23}{:<23}{:<23}{:<23}{:<23}",
                 server.socket_addr,
-                other_peer.peer_type.as_str(),
+                other_peer.kind.as_str(),
                 other_peer.status.as_str(),
                 other_peer.socket_addr,
                 other_peer.session_index,

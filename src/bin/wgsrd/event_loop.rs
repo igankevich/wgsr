@@ -29,8 +29,8 @@ use wgsr::format_error;
 use wgsr::EncodeDecode;
 use wgsr::Error;
 use wgsr::Peer;
+use wgsr::PeerKind;
 use wgsr::PeerStatus;
-use wgsr::PeerType;
 use wgsr::Request;
 use wgsr::Response;
 use wgsr::Status;
@@ -177,8 +177,8 @@ impl EventLoop {
                                 ))
                             }
                         };
-                        match peer.peer_type {
-                            PeerType::Hub => {
+                        match peer.kind {
+                            PeerKind::Hub => {
                                 let new_hub = Hub {
                                     public_key: initiation.static_public,
                                     session,
@@ -186,7 +186,7 @@ impl EventLoop {
                                 };
                                 server.hub = Some(new_hub);
                             }
-                            PeerType::Spoke => {
+                            PeerKind::Spoke => {
                                 server.spokes.push(Spoke {
                                     public_key: initiation.static_public,
                                     session,
@@ -205,7 +205,7 @@ impl EventLoop {
                                 socket_addr: from,
                                 session_index: sender_index.into(),
                                 status: PeerStatus::Pending,
-                                peer_type: PeerType::Spoke,
+                                kind: PeerKind::Spoke,
                             });
                             eprintln!("forward handshake-initiation from {} to hub", from);
                             server.socket.send_to(packet, hub.socket_addr)?;
@@ -233,7 +233,7 @@ impl EventLoop {
                             socket_addr: hub.socket_addr,
                             session_index: message.sender_index.into(),
                             status: PeerStatus::Authorized,
-                            peer_type: PeerType::Hub,
+                            kind: PeerKind::Hub,
                         });
                     }
                 }
@@ -359,7 +359,7 @@ impl EventLoop {
                 eprintln!(
                     "{:<23}{:<23}{:<23}{:<23}{:<23}",
                     server.socket_addr,
-                    other_peer.peer_type.as_str(),
+                    other_peer.kind.as_str(),
                     other_peer.status.as_str(),
                     other_peer.socket_addr,
                     other_peer.session_index,

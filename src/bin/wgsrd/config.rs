@@ -8,7 +8,7 @@ use wgproto::PublicKey;
 use wgsr::format_error;
 use wgsr::Error;
 use wgsr::FromBase64;
-use wgsr::PeerType;
+use wgsr::PeerKind;
 use wgsr::ToBase64;
 use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
@@ -29,16 +29,13 @@ impl Config {
         let mut listen_port: Option<NonZeroU16> = None;
         let add_peer = |servers: &mut Vec<ServerConfig>,
                         public_key: Option<PublicKey>,
-                        peer_type: PeerType|
+                        kind: PeerKind|
          -> Result<(), Error> {
             match public_key {
                 Some(public_key) => match servers.last_mut() {
                     None => return Err(format_error!("no servers defined")),
                     Some(server) => {
-                        server.peers.push(PeerConfig {
-                            public_key,
-                            peer_type,
-                        });
+                        server.peers.push(PeerConfig { public_key, kind });
                     }
                 },
                 None => {
@@ -88,8 +85,8 @@ impl Config {
          -> Result<(), Error> {
             match prev_section.as_deref() {
                 Some("Relay") => add_server(servers, private_key, preshared_key, listen_port),
-                Some("Hub") => add_peer(servers, public_key, PeerType::Hub),
-                Some("Spoke") => add_peer(servers, public_key, PeerType::Spoke),
+                Some("Hub") => add_peer(servers, public_key, PeerKind::Hub),
+                Some("Spoke") => add_peer(servers, public_key, PeerKind::Spoke),
                 Some(other) => Err(format_error!("unknown section: {}", other)),
                 // handle first section
                 None => Ok(()),
@@ -148,7 +145,7 @@ pub(crate) struct ServerConfig {
 
 pub(crate) struct PeerConfig {
     pub(crate) public_key: PublicKey,
-    pub(crate) peer_type: PeerType,
+    pub(crate) kind: PeerKind,
 }
 
 fn validate_servers(servers: &[ServerConfig]) -> Result<(), Error> {
@@ -170,7 +167,7 @@ fn validate_peers(peers: &[PeerConfig], server_public_key: &PublicKey) -> Result
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
     let mut hub_found = false;
     for peer in peers.iter() {
-        if peer.peer_type == PeerType::Hub {
+        if peer.kind == PeerKind::Hub {
             if hub_found {
                 return Err(format_error!("only one hub per server is supported"));
             }

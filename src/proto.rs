@@ -57,7 +57,7 @@ pub struct Peer {
     pub socket_addr: SocketAddr,
     pub session_index: u32,
     pub status: PeerStatus,
-    pub peer_type: PeerType,
+    pub kind: PeerKind,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
@@ -76,12 +76,12 @@ impl PeerStatus {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
-pub enum PeerType {
+pub enum PeerKind {
     Hub,
     Spoke,
 }
 
-impl PeerType {
+impl PeerKind {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Hub => "hub",
