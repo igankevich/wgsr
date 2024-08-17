@@ -13,6 +13,5 @@ libc = "0.2.156"
 mio = { version = "1.0.1", features = ["net", "os-poll", "os-ext"], default-features = false }
 rand = { version = "0.8.5", features = [], default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
-#wgproto = { version = "0.1.0", git = "https://github.com/igankevich/wgproto", branch = "master" }
-wgproto = { version = "0.1.0", path = "../wgproto" }
+wgproto = { version = "0.2.0", git = "https://github.com/igankevich/wgproto", tag = "0.2.0" }
 x25519-dalek = { version = "2.0.1", features = ["serde"] }
