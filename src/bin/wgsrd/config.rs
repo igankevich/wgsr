@@ -87,7 +87,7 @@ impl Config {
                    listen_port: Option<NonZeroU16>|
          -> Result<(), Error> {
             match prev_section.as_deref() {
-                Some("Server") => add_server(servers, private_key, preshared_key, listen_port),
+                Some("Relay") => add_server(servers, private_key, preshared_key, listen_port),
                 Some("Hub") => add_peer(servers, public_key, PeerType::Hub),
                 Some("Spoke") => add_peer(servers, public_key, PeerType::Spoke),
                 Some(other) => Err(format_error!("unknown section: {}", other)),
@@ -108,15 +108,15 @@ impl Config {
             }
             prev_section = section.map(ToString::to_string);
             match section {
-                Some("Server") => match key {
+                Some("Relay") => match key {
                     "PrivateKey" => private_key = Some(FromBase64::from_base64(value)?),
                     "ListenPort" => listen_port = Some(value.parse().map_err(Error::other)?),
                     "PresharedKey" => preshared_key = Some(FromBase64::from_base64(value)?),
-                    key => return Err(format_error!("unknown server key: `{}`", key)),
+                    key => return Err(format_error!("unknown relay key: `{}`", key)),
                 },
                 Some("Hub") | Some("Spoke") => match key {
                     "PublicKey" => public_key = Some(FromBase64::from_base64(value)?),
-                    key => return Err(format_error!("unknown key: `{}`", key)),
+                    key => return Err(format_error!("unknown hub/spoke key: `{}`", key)),
                 },
                 Some(other) => return Err(format_error!("unknown section: {}", other)),
                 None => return Err(format_error!("unknown section")),

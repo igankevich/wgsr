@@ -7,6 +7,7 @@ use wgsr::Request;
 use wgsr::Response;
 use wgsr::Status;
 use wgsr::ToBase64;
+use wgsr::DEFAULT_CONFIGURATION_FILE_PATH;
 use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
@@ -26,6 +27,14 @@ struct Args {
     /// Print version.
     #[clap(long, action)]
     version: bool,
+    /// Configuration file path.
+    #[arg(
+        short = 'c',
+        long = "config-file",
+        value_name = "path",
+        default_value = DEFAULT_CONFIGURATION_FILE_PATH
+    )]
+    config_file: PathBuf,
     /// UNIX socket path.
     #[arg(
         short = 's',

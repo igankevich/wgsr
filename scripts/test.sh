@@ -82,7 +82,7 @@ generate_keys spoke
 wg genpsk >"$workdir"/wgsr-preshared-key
 wg genpsk >"$workdir"/spoke-preshared-key
 cat >"$workdir"/wgsr.conf <<EOF
-[Server]
+[Relay]
 PrivateKey = $(cat "$workdir"/wgsr-private-key)
 PresharedKey = $(cat "$workdir"/wgsr-preshared-key)
 ListenPort = 10000
