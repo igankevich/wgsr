@@ -619,7 +619,10 @@ impl EventLoop {
             }
         }
         for addr in iter {
-            writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?;
+            match addr {
+                IpAddr::V4(addr) => writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?,
+                IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
+            }
         }
         writeln!(&mut buf, "PersistentKeepalive = 23")?;
         writeln!(&mut buf, "# no IPs are allowed")?;
