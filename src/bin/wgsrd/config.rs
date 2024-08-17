@@ -18,7 +18,6 @@ use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgsrd.conf";
 
-#[derive(Default)]
 pub(crate) struct Config {
     pub(crate) servers: Vec<ServerConfig>,
     pub(crate) unix_socket_path: PathBuf,
@@ -183,6 +182,15 @@ impl Config {
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
         validate_servers(&self.servers)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            servers: Default::default(),
+            unix_socket_path: DEFAULT_UNIX_SOCKET_PATH.into(),
+        }
     }
 }
 
