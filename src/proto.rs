@@ -31,6 +31,30 @@ pub enum Request {
         listen_port: NonZeroU16,
         persistent: bool,
     },
+    HubAdd {
+        listen_port: NonZeroU16,
+        #[bincode(with_serde)]
+        public_key: PublicKey,
+        persistent: bool,
+    },
+    HubRemove {
+        listen_port: NonZeroU16,
+        #[bincode(with_serde)]
+        public_key: PublicKey,
+        persistent: bool,
+    },
+    SpokeAdd {
+        listen_port: NonZeroU16,
+        #[bincode(with_serde)]
+        public_key: PublicKey,
+        persistent: bool,
+    },
+    SpokeRemove {
+        listen_port: NonZeroU16,
+        #[bincode(with_serde)]
+        public_key: PublicKey,
+        persistent: bool,
+    },
 }
 
 #[derive(Decode, Encode)]
@@ -38,6 +62,10 @@ pub enum Response {
     Status(Result<Status, RequestError>),
     RelayAdd(Result<NonZeroU16, RequestError>),
     RelayRemove(Result<(), RequestError>),
+    HubAdd(Result<(), RequestError>),
+    HubRemove(Result<(), RequestError>),
+    SpokeAdd(Result<(), RequestError>),
+    SpokeRemove(Result<(), RequestError>),
 }
 
 #[derive(Decode, Encode)]

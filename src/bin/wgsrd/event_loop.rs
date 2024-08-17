@@ -46,6 +46,7 @@ use wgsr::MAX_REQUEST_SIZE;
 use wgsr::MAX_RESPONSE_SIZE;
 
 use crate::Config;
+use crate::PeerConfig;
 use crate::ServerConfig;
 
 pub(crate) struct EventLoop {
@@ -343,6 +344,66 @@ impl EventLoop {
                                 .map_err(|e| RequestError(e.to_string()));
                         Response::RelayRemove(response)
                     }
+                    Request::HubAdd {
+                        listen_port,
+                        public_key,
+                        persistent,
+                    } => {
+                        let response = Self::add_hub(
+                            listen_port,
+                            public_key,
+                            persistent,
+                            config_file,
+                            servers,
+                        )
+                        .map_err(|e| RequestError(e.to_string()));
+                        Response::HubAdd(response)
+                    }
+                    Request::HubRemove {
+                        listen_port,
+                        public_key,
+                        persistent,
+                    } => {
+                        let response = Self::remove_hub(
+                            listen_port,
+                            public_key,
+                            persistent,
+                            config_file,
+                            servers,
+                        )
+                        .map_err(|e| RequestError(e.to_string()));
+                        Response::HubRemove(response)
+                    }
+                    Request::SpokeAdd {
+                        listen_port,
+                        public_key,
+                        persistent,
+                    } => {
+                        let response = Self::add_spoke(
+                            listen_port,
+                            public_key,
+                            persistent,
+                            config_file,
+                            servers,
+                        )
+                        .map_err(|e| RequestError(e.to_string()));
+                        Response::SpokeAdd(response)
+                    }
+                    Request::SpokeRemove {
+                        listen_port,
+                        public_key,
+                        persistent,
+                    } => {
+                        let response = Self::remove_spoke(
+                            listen_port,
+                            public_key,
+                            persistent,
+                            config_file,
+                            servers,
+                        )
+                        .map_err(|e| RequestError(e.to_string()));
+                        Response::SpokeRemove(response)
+                    }
                 };
                 client.send_response(&response)?;
             }
@@ -444,11 +505,10 @@ impl EventLoop {
             },
         };
         if persistent {
-            let mut config = Config::open(config_file)?;
-            config.servers.push(server.config.clone());
-            let tmp_config_file = get_tmp_file(config_file)?;
-            config.save(tmp_config_file.as_path())?;
-            rename(tmp_config_file.as_path(), config_file)?;
+            update_config(config_file, |config| {
+                config.servers.push(server.config.clone());
+                Ok(())
+            })?;
         }
         servers.insert(listen_port, server);
         Ok(non_zero_listen_port)
@@ -465,16 +525,215 @@ impl EventLoop {
             return Err(format_error!("no relay with listen-port `{}`", listen_port));
         }
         if persistent {
-            let mut config = Config::open(config_file)?;
-            config
-                .servers
-                .retain(|server| server.listen_port != listen_port);
-            let tmp_config_file = get_tmp_file(config_file)?;
-            config.save(tmp_config_file.as_path())?;
-            rename(tmp_config_file.as_path(), config_file)?;
+            update_config(config_file, |config| {
+                config
+                    .servers
+                    .retain(|server| server.listen_port != listen_port);
+                Ok(())
+            })?;
         }
         Ok(())
     }
+
+    fn add_hub(
+        listen_port: NonZeroU16,
+        public_key: PublicKey,
+        persistent: bool,
+        config_file: &Path,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(), Error> {
+        let port: u16 = listen_port.into();
+        let relay = servers
+            .get_mut(&port)
+            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
+        if relay
+            .config
+            .peers
+            .iter()
+            .any(|peer| peer.public_key == public_key)
+        {
+            return Err(format_error!(
+                "another hub/spoke with public key `{}` is attached to listen port `{}`",
+                public_key.to_base64(),
+                listen_port
+            ));
+        }
+        let peer = PeerConfig {
+            public_key,
+            kind: PeerKind::Hub,
+        };
+        relay.config.peers.push(peer.clone());
+        if persistent {
+            update_config(config_file, |config| {
+                let server = config
+                    .servers
+                    .iter_mut()
+                    .find(|server| server.listen_port == listen_port)
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no relay with listen port `{}` in `{}`",
+                            listen_port,
+                            config_file.display()
+                        )
+                    })?;
+                server.peers.push(peer);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn remove_hub(
+        listen_port: NonZeroU16,
+        public_key: PublicKey,
+        persistent: bool,
+        config_file: &Path,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(), Error> {
+        let port: u16 = listen_port.into();
+        let relay = servers
+            .get_mut(&port)
+            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
+        let old_len = relay.config.peers.len();
+        relay
+            .config
+            .peers
+            .retain(|peer| peer.kind != PeerKind::Hub || peer.public_key != public_key);
+        let new_len = relay.config.peers.len();
+        if new_len != old_len {
+            return Err(format_error!(
+                "no hub with public key `{}`",
+                public_key.to_base64()
+            ));
+        }
+        relay.hub = None;
+        if persistent {
+            update_config(config_file, |config| {
+                let server = config
+                    .servers
+                    .iter_mut()
+                    .find(|server| server.listen_port == listen_port)
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no relay with listen port `{}` in `{}`",
+                            listen_port,
+                            config_file.display()
+                        )
+                    })?;
+                server
+                    .peers
+                    .retain(|peer| peer.kind != PeerKind::Hub || peer.public_key != public_key);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn add_spoke(
+        listen_port: NonZeroU16,
+        public_key: PublicKey,
+        persistent: bool,
+        config_file: &Path,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(), Error> {
+        let port: u16 = listen_port.into();
+        let relay = servers
+            .get_mut(&port)
+            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
+        if relay
+            .config
+            .peers
+            .iter()
+            .any(|peer| peer.public_key == public_key)
+        {
+            return Err(format_error!(
+                "another hub/spoke with public key `{}` is attached to listen port `{}`",
+                public_key.to_base64(),
+                listen_port
+            ));
+        }
+        let peer = PeerConfig {
+            public_key,
+            kind: PeerKind::Spoke,
+        };
+        relay.config.peers.push(peer.clone());
+        if persistent {
+            update_config(config_file, |config| {
+                let server = config
+                    .servers
+                    .iter_mut()
+                    .find(|server| server.listen_port == listen_port)
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no relay with listen port `{}` in `{}`",
+                            listen_port,
+                            config_file.display()
+                        )
+                    })?;
+                server.peers.push(peer);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn remove_spoke(
+        listen_port: NonZeroU16,
+        public_key: PublicKey,
+        persistent: bool,
+        config_file: &Path,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(), Error> {
+        let port: u16 = listen_port.into();
+        let relay = servers
+            .get_mut(&port)
+            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
+        let old_len = relay.config.peers.len();
+        relay.spokes.retain(|spoke| spoke.public_key != public_key);
+        relay
+            .config
+            .peers
+            .retain(|peer| peer.kind != PeerKind::Spoke || peer.public_key != public_key);
+        let new_len = relay.config.peers.len();
+        if new_len != old_len {
+            return Err(format_error!(
+                "no hub with public key `{}`",
+                public_key.to_base64()
+            ));
+        }
+        if persistent {
+            update_config(config_file, |config| {
+                let server = config
+                    .servers
+                    .iter_mut()
+                    .find(|server| server.listen_port == listen_port)
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no relay with listen port `{}` in `{}`",
+                            listen_port,
+                            config_file.display()
+                        )
+                    })?;
+                server
+                    .peers
+                    .retain(|peer| peer.kind != PeerKind::Spoke || peer.public_key != public_key);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+}
+
+fn update_config<F>(config_file: &Path, f: F) -> Result<(), Error>
+where
+    F: FnOnce(&'_ mut Config) -> Result<(), Error>,
+{
+    let mut config = Config::open(config_file)?;
+    f(&mut config)?;
+    let tmp_config_file = get_tmp_file(config_file)?;
+    config.save(tmp_config_file.as_path())?;
+    rename(tmp_config_file.as_path(), config_file)?;
+    Ok(())
 }
 
 struct Server {

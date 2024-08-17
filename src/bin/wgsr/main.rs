@@ -4,6 +4,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use clap::Subcommand;
+use wgproto::PublicKey;
+use wgsr::FromBase64;
 use wgsr::Request;
 use wgsr::Response;
 use wgsr::Status;
@@ -49,6 +51,16 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    /// Hub commands.
+    Hub {
+        #[command(subcommand)]
+        command: HubCommand,
+    },
+    /// Spoke commands.
+    Spoke {
+        #[command(subcommand)]
+        command: SpokeCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -62,6 +74,46 @@ enum RelayCommand {
     Rm {
         /// Listen port.
         listen_port: NonZeroU16,
+    },
+}
+
+#[derive(Subcommand)]
+enum HubCommand {
+    /// Add new hub.
+    Add {
+        /// Relay listen port.
+        listen_port: NonZeroU16,
+        /// Public key.
+        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
+        public_key: PublicKey,
+    },
+    /// Remove existing hub.
+    Rm {
+        /// Relay listen port.
+        listen_port: NonZeroU16,
+        /// Public key.
+        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
+        public_key: PublicKey,
+    },
+}
+
+#[derive(Subcommand)]
+enum SpokeCommand {
+    /// Add new hub.
+    Add {
+        /// Relay listen port.
+        listen_port: NonZeroU16,
+        /// Public key.
+        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
+        public_key: PublicKey,
+    },
+    /// Remove existing hub.
+    Rm {
+        /// Relay listen port.
+        listen_port: NonZeroU16,
+        /// Public key.
+        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
+        public_key: PublicKey,
     },
 }
 
@@ -119,6 +171,70 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        Some(Command::Hub { command }) => match command {
+            HubCommand::Add {
+                listen_port,
+                public_key,
+            } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(Request::HubAdd {
+                    listen_port,
+                    public_key,
+                    persistent: true,
+                })? {
+                    Response::HubAdd(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Rm {
+                listen_port,
+                public_key,
+            } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(Request::HubRemove {
+                    listen_port,
+                    public_key,
+                    persistent: true,
+                })? {
+                    Response::HubRemove(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Some(Command::Spoke { command }) => match command {
+            SpokeCommand::Add {
+                listen_port,
+                public_key,
+            } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(Request::SpokeAdd {
+                    listen_port,
+                    public_key,
+                    persistent: true,
+                })? {
+                    Response::SpokeAdd(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Rm {
+                listen_port,
+                public_key,
+            } => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(Request::SpokeRemove {
+                    listen_port,
+                    public_key,
+                    persistent: true,
+                })? {
+                    Response::SpokeRemove(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         None => Ok(ExitCode::FAILURE),
     }
 }
@@ -163,4 +279,11 @@ fn print_status(status: &Status) {
         }
     }
     println!("-");
+}
+
+fn base64_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Send + 'static>>
+where
+    T: FromBase64,
+{
+    Ok(T::from_base64(s).map_err(|e| e.to_string())?)
 }
