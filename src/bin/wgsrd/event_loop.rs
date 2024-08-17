@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs::create_dir_all;
+use std::fs::remove_file;
 use std::fs::rename;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -65,7 +66,6 @@ impl EventLoop {
         for (i, server) in config.servers.into_iter().enumerate() {
             let socket_addr =
                 SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), server.listen_port.into());
-            eprintln!("listen on {}", socket_addr);
             let mut socket = UdpSocket::bind(socket_addr)?;
             poll.registry()
                 .register(&mut socket, Token(i), Interest::READABLE)?;
@@ -86,6 +86,7 @@ impl EventLoop {
         if let Some(directory) = config.unix_socket_path.parent() {
             create_dir_all(directory)?;
         }
+        let _ = remove_file(config.unix_socket_path.as_path());
         let mut unix_server = UnixListener::bind(config.unix_socket_path.as_path())?;
         poll.registry()
             .register(&mut unix_server, UNIX_SERVER_TOKEN, Interest::READABLE)?;
@@ -106,7 +107,7 @@ impl EventLoop {
         let mut events = Events::with_capacity(MAX_EVENTS);
         let mut buffer = [0_u8; MAX_PACKET_SIZE];
         loop {
-            self.dump();
+            //self.dump();
             events.clear();
             match self.poll.poll(&mut events, None) {
                 Ok(()) => Ok(()),
@@ -124,7 +125,6 @@ impl EventLoop {
                         }
                     }
                     Token(i) if (UNIX_TOKEN_MIN..=UNIX_TOKEN_MAX).contains(&i) => {
-                        let i = i - UNIX_TOKEN_MIN;
                         if event.is_error() {
                             self.unix_clients.remove(&i);
                             continue;
@@ -167,7 +167,6 @@ impl EventLoop {
         let mut buffer = InputBuffer::new(packet);
         let mut context = Context::new(&server.public_key);
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
-        eprintln!("{:?} from {}", message.get_type(), from);
         match message {
             Message::HandshakeInitiation(message) => {
                 let sender_index = message.sender_index;
@@ -287,14 +286,13 @@ impl EventLoop {
     fn accept_unix_connections(&mut self) -> Result<(), Error> {
         use std::collections::hash_map::Entry;
         loop {
-            let (mut stream, from) = match self.unix_server.accept() {
+            let (mut stream, _from) = match self.unix_server.accept() {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     // no more connections to accept
                     break;
                 }
                 other => other,
             }?;
-            eprintln!("accepted connection from {:?}", from);
             if self.unix_clients.len() == MAX_UNIX_CLIENTS {
                 return Err(Error::other("max no. of unix clients reached"));
             }
@@ -427,48 +425,6 @@ impl EventLoop {
         Ok(())
     }
 
-    fn dump(&self) {
-        eprintln!(
-            "{:<23}{:<23}{:<23}{:<23}{:<23}{:<46}",
-            "Local", "Type", "Status", "Remote", "Session", "PublicKey"
-        );
-        for server in self.servers.values() {
-            if let Some(hub) = server.hub.as_ref() {
-                eprintln!(
-                    "{:<23}{:<23}{:<23}{:<23}{:<23}{}",
-                    server.socket_addr,
-                    "hub-auth",
-                    "authorized",
-                    hub.socket_addr,
-                    hub.session.sender_index(),
-                    hub.public_key.to_base64(),
-                );
-            }
-            for spoke in server.spokes.iter() {
-                eprintln!(
-                    "{:<23}{:<23}{:<23}{:<23}{:<23}{}",
-                    server.socket_addr,
-                    "spoke-auth",
-                    "authorized",
-                    spoke.socket_addr,
-                    spoke.session.sender_index(),
-                    spoke.public_key.to_base64(),
-                );
-            }
-            for other_peer in server.other_peers.iter() {
-                eprintln!(
-                    "{:<23}{:<23}{:<23}{:<23}{:<23}",
-                    server.socket_addr,
-                    other_peer.kind.as_str(),
-                    other_peer.status.as_str(),
-                    other_peer.socket_addr,
-                    other_peer.session_index,
-                );
-            }
-        }
-        eprintln!("-");
-    }
-
     fn add_relay(
         listen_port: Option<NonZeroU16>,
         persistent: bool,
@@ -491,7 +447,6 @@ impl EventLoop {
         let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), listen_port);
         let private_key = PrivateKey::random();
         let preshared_key = PresharedKey::random();
-        eprintln!("listen on {}", socket_addr);
         let mut socket = UdpSocket::bind(socket_addr)?;
         poll.registry()
             .register(&mut socket, Token(listen_port as usize), Interest::READABLE)?;
@@ -651,24 +606,21 @@ impl EventLoop {
         let mut internet_addresses = get_internet_addresses()?;
         internet_addresses.sort();
         let mut iter = internet_addresses.into_iter();
+        let port = relay.socket_addr.port();
         match iter.next() {
             Some(addr) => {
-                writeln!(&mut buf, "Endpoint = {}:{}", addr, relay.socket_addr.port())?;
+                writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?;
             }
             None => {
                 writeln!(&mut buf, "# no internet addresses found")?;
-                writeln!(&mut buf, "# Endpoint = ")?;
+                writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
             }
         }
         for addr in iter {
-            writeln!(
-                &mut buf,
-                "# Endpoint = {}:{}",
-                addr,
-                relay.socket_addr.port()
-            )?;
+            writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?;
         }
         writeln!(&mut buf, "PersistentKeepalive = 23")?;
+        writeln!(&mut buf, "# no IPs are allowed")?;
         writeln!(&mut buf, "AllowedIPs =")?;
         Ok(buf)
     }

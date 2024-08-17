@@ -13,7 +13,7 @@ use crate::Error;
 pub(crate) fn get_internet_addresses() -> Result<Vec<IpAddr>, Error> {
     let mut internet_addresses = Vec::new();
     let network_interfaces = NetworkInterface::show().map_err(Error::other)?;
-    let private_networks = get_private_networks()?;
+    let non_global_networks = get_non_global_networks()?;
     for iface in network_interfaces.into_iter() {
         for addr in iface.addr.into_iter() {
             let ipnet: IpNet = match addr {
@@ -28,7 +28,7 @@ pub(crate) fn get_internet_addresses() -> Result<Vec<IpAddr>, Error> {
                 )?
                 .into(),
             };
-            if !private_networks.iter().any(|n| ipnet.is_sibling(n)) {
+            if !non_global_networks.iter().any(|n| n.contains(&ipnet)) {
                 internet_addresses.push(ipnet.addr());
             }
         }
@@ -36,12 +36,15 @@ pub(crate) fn get_internet_addresses() -> Result<Vec<IpAddr>, Error> {
     Ok(internet_addresses)
 }
 
-fn get_private_networks() -> Result<[IpNet; 6], Error> {
+fn get_non_global_networks() -> Result<[IpNet; 8], Error> {
     Ok([
+        Ipv4Net::new(Ipv4Addr::LOCALHOST, 8)?.into(),
         Ipv4Net::new(Ipv4Addr::new(10, 0, 0, 0), 8)?.into(),
         Ipv4Net::new(Ipv4Addr::new(172, 16, 0, 0), 12)?.into(),
         Ipv4Net::new(Ipv4Addr::new(192, 168, 0, 0), 16)?.into(),
         Ipv4Net::new(Ipv4Addr::new(100, 64, 0, 0), 10)?.into(),
+        // loopback
+        Ipv6Net::new(Ipv6Addr::LOCALHOST, 128)?.into(),
         // link-local
         Ipv6Net::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 10)?.into(),
         // unique local addresses

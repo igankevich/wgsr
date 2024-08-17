@@ -1,5 +1,7 @@
+use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -32,6 +34,8 @@ impl UnixClient {
 
     pub(crate) fn call(&mut self, request: Request) -> Result<Response, Error> {
         request.encode(&mut self.writer)?;
+        self.writer.flush()?;
+        self.reader.fill_buf()?;
         let response = Response::decode(&mut self.reader)?;
         Ok(response)
     }
