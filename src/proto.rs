@@ -55,6 +55,9 @@ pub enum Request {
         public_key: PublicKey,
         persistent: bool,
     },
+    Export {
+        listen_port: NonZeroU16,
+    },
 }
 
 #[derive(Decode, Encode)]
@@ -66,6 +69,7 @@ pub enum Response {
     HubRemove(Result<(), RequestError>),
     SpokeAdd(Result<(), RequestError>),
     SpokeRemove(Result<(), RequestError>),
+    Export(Result<String, RequestError>),
 }
 
 #[derive(Decode, Encode)]
@@ -131,6 +135,12 @@ impl PeerKind {
 
 #[derive(Decode, Encode)]
 pub struct RequestError(pub String);
+
+impl RequestError {
+    pub fn map(other: impl ToString) -> Self {
+        Self(other.to_string())
+    }
+}
 
 impl Display for RequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

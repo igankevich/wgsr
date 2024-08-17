@@ -3,8 +3,8 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::path::Path;
 
-use wgsr::format_error;
-use wgsr::Error;
+use crate::format_error;
+use crate::Error;
 
 pub(crate) fn parse_config<F: FnMut(Option<&str>, &str, &str, bool) -> Result<(), Error>>(
     path: &Path,

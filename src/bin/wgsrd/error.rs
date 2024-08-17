@@ -3,7 +3,6 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 
 pub enum Error {
-    Base64,
     Io(std::io::Error),
     Other(String),
 }
@@ -19,7 +18,6 @@ impl Display for Error {
         match self {
             Self::Other(x) => write!(f, "{}", x),
             Self::Io(x) => write!(f, "i/o error: {}", x),
-            Self::Base64 => write!(f, "base64 i/o error"),
         }
     }
 }
@@ -59,6 +57,18 @@ impl From<bincode::error::DecodeError> for Error {
 impl From<bincode::error::EncodeError> for Error {
     fn from(other: bincode::error::EncodeError) -> Self {
         Self::other(other)
+    }
+}
+
+impl From<ipnet::PrefixLenError> for Error {
+    fn from(other: ipnet::PrefixLenError) -> Self {
+        Self::other(other)
+    }
+}
+
+impl From<wgsr::Base64Error> for Error {
+    fn from(_other: wgsr::Base64Error) -> Self {
+        Self::other("base64 i/o error")
     }
 }
 
