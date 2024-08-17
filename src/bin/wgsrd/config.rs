@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::path::PathBuf;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
+use wgsr::PeerType;
 
 use crate::format_error;
 use crate::parse_config;
@@ -13,6 +15,7 @@ use crate::ToBase64;
 
 pub(crate) struct Config {
     pub(crate) servers: Vec<ServerConfig>,
+    pub(crate) unix_socket_path: PathBuf,
 }
 
 impl Config {
@@ -92,7 +95,6 @@ impl Config {
             }
         };
         parse_config(path, |section, key, value, new_section| {
-            eprintln!("{:?}.{} = {}", section, key, value);
             if new_section {
                 add(
                     &mut servers,
@@ -129,7 +131,10 @@ impl Config {
             listen_port.take(),
         )?;
         validate_servers(servers.as_slice())?;
-        Ok(Self { servers })
+        Ok(Self {
+            servers,
+            unix_socket_path: "/tmp/.wgsrd-socket".into(),
+        })
     }
 }
 
@@ -143,21 +148,6 @@ pub(crate) struct ServerConfig {
 pub(crate) struct PeerConfig {
     pub(crate) public_key: PublicKey,
     pub(crate) peer_type: PeerType,
-}
-
-#[derive(PartialEq, Eq)]
-pub(crate) enum PeerType {
-    Hub,
-    Spoke,
-}
-
-impl PeerType {
-    pub(crate) fn as_str(&self) -> &str {
-        match self {
-            Self::Hub => "hub",
-            Self::Spoke => "spoke",
-        }
-    }
 }
 
 fn validate_servers(servers: &[ServerConfig]) -> Result<(), Error> {

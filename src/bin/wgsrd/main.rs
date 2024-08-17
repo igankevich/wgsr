@@ -42,6 +42,9 @@ fn main() -> ExitCode {
 }
 
 fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        libc::umask(0o077);
+    }
     let config = Config::open(config_file)?;
     let event_loop = EventLoop::new(config)?;
     let waker = event_loop.waker()?;

@@ -48,6 +48,18 @@ impl From<wgproto::Error> for Error {
     }
 }
 
+impl From<bincode::error::DecodeError> for Error {
+    fn from(other: bincode::error::DecodeError) -> Self {
+        Self::other(other)
+    }
+}
+
+impl From<bincode::error::EncodeError> for Error {
+    fn from(other: bincode::error::EncodeError) -> Self {
+        Self::other(other)
+    }
+}
+
 #[macro_export]
 macro_rules! format_error {
     ($($args:expr),*) => {

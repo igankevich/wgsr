@@ -1,8 +1,25 @@
+use std::collections::HashMap;
+use std::fs::create_dir_all;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::BufWriter;
+use std::io::Write;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 
+use bincode::decode_from_slice;
+use bincode::encode_into_std_write;
+use bincode::error::DecodeError;
+use mio::event::Event;
 use mio::net::UdpSocket;
+use mio::net::UnixListener;
+use mio::net::UnixStream;
+use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
+use rand::Rng;
+use rand_core::OsRng;
 use wgproto::Context;
 use wgproto::DecodeWithContext;
 use wgproto::InputBuffer;
@@ -10,18 +27,24 @@ use wgproto::Message;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
-use wgproto::SessionIndex;
+use wgsr::Peer;
+use wgsr::PeerStatus;
+use wgsr::PeerType;
+use wgsr::Request;
+use wgsr::Response;
+use wgsr::Status;
 
 use crate::format_error;
 use crate::Config;
 use crate::Error;
-use crate::PeerType;
 use crate::ServerConfig;
 use crate::ToBase64;
 
 pub(crate) struct EventLoop {
     poll: Poll,
     servers: Vec<Server>,
+    unix_server: UnixListener,
+    unix_clients: HashMap<usize, UnixClient>,
 }
 
 impl EventLoop {
@@ -45,7 +68,19 @@ impl EventLoop {
                 config: server,
             });
         }
-        Ok(Self { poll, servers })
+        // unix socket
+        if let Some(directory) = config.unix_socket_path.parent() {
+            create_dir_all(directory)?;
+        }
+        let mut unix_server = UnixListener::bind(config.unix_socket_path.as_path())?;
+        poll.registry()
+            .register(&mut unix_server, UNIX_SERVER_TOKEN, Interest::READABLE)?;
+        Ok(Self {
+            poll,
+            servers,
+            unix_server,
+            unix_clients: Default::default(),
+        })
     }
 
     pub(crate) fn waker(&self) -> Result<Waker, Error> {
@@ -64,18 +99,46 @@ impl EventLoop {
                 other => other,
             }?;
             for event in events.iter() {
-                if event.token() == WAKE_TOKEN {
-                    return Ok(());
-                }
-                let i = event.token().0;
-                let peer = match self.servers.get_mut(i) {
-                    Some(peer) => peer,
-                    None => continue,
-                };
-                if event.is_readable() {
-                    if let Err(e) = Self::process_packet(peer, buffer.as_mut_slice()) {
-                        eprintln!("failed to process packet: {}", e);
+                let ret = match event.token() {
+                    WAKE_TOKEN => return Ok(()),
+                    UNIX_SERVER_TOKEN => {
+                        if event.is_readable() {
+                            self.accept_unix_connections()
+                        } else {
+                            Ok(())
+                        }
                     }
+                    Token(i) if (UNIX_TOKEN_MIN..=UNIX_TOKEN_MAX).contains(&i) => {
+                        let i = i - UNIX_TOKEN_MIN;
+                        if event.is_error() {
+                            self.unix_clients.remove(&i);
+                            continue;
+                        }
+                        let client = match self.unix_clients.get_mut(&i) {
+                            Some(client) => client,
+                            None => continue,
+                        };
+                        Self::process_unix_client_event(
+                            event,
+                            client,
+                            &self.servers,
+                            &mut self.poll,
+                        )
+                    }
+                    Token(i) => {
+                        let peer = match self.servers.get_mut(i) {
+                            Some(peer) => peer,
+                            None => continue,
+                        };
+                        if event.is_readable() {
+                            Self::process_packet(peer, buffer.as_mut_slice())
+                        } else {
+                            Ok(())
+                        }
+                    }
+                };
+                if let Err(e) = ret {
+                    eprintln!("{}", e);
                 }
             }
         }
@@ -137,10 +200,10 @@ impl EventLoop {
                             if from == hub.socket_addr {
                                 return Err(e.into());
                             }
-                            server.other_peers.push(OtherPeer {
+                            server.other_peers.push(Peer {
                                 socket_addr: from,
-                                session_index: sender_index,
-                                status: OtherPeerStatus::Pending,
+                                session_index: sender_index.into(),
+                                status: PeerStatus::Pending,
                                 peer_type: PeerType::Spoke,
                             });
                             eprintln!("forward handshake-initiation from {} to hub", from);
@@ -157,20 +220,18 @@ impl EventLoop {
                         from, message.receiver_index
                     );
                     if from == hub.socket_addr {
-                        if let Some(other_peer) = server
-                            .other_peers
-                            .iter_mut()
-                            .find(|other_peer| other_peer.session_index == message.receiver_index)
-                        {
+                        if let Some(other_peer) = server.other_peers.iter_mut().find(|other_peer| {
+                            other_peer.session_index == message.receiver_index.as_u32()
+                        }) {
                             eprintln!("authorize");
-                            other_peer.status = OtherPeerStatus::Authorized;
+                            other_peer.status = PeerStatus::Authorized;
                             server.socket.send_to(packet, other_peer.socket_addr)?;
                         }
                         // add hub as a peer
-                        server.other_peers.push(OtherPeer {
+                        server.other_peers.push(Peer {
                             socket_addr: hub.socket_addr,
-                            session_index: message.sender_index,
-                            status: OtherPeerStatus::Authorized,
+                            session_index: message.sender_index.into(),
+                            status: PeerStatus::Authorized,
                             peer_type: PeerType::Hub,
                         });
                     }
@@ -186,7 +247,7 @@ impl EventLoop {
                                 eprintln!("received {:?}", data);
                             } else if let Some(other_peer) =
                                 server.other_peers.iter_mut().find(|other_peer| {
-                                    other_peer.session_index == message.receiver_index
+                                    other_peer.session_index == message.receiver_index.as_u32()
                                 })
                             {
                                 eprintln!("send packet from hub to {}", other_peer.socket_addr);
@@ -202,6 +263,64 @@ impl EventLoop {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn accept_unix_connections(&mut self) -> Result<(), Error> {
+        use std::collections::hash_map::Entry;
+        loop {
+            let (mut stream, from) = match self.unix_server.accept() {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // no more connections to accept
+                    break;
+                }
+                other => other,
+            }?;
+            eprintln!("accepted connection from {:?}", from);
+            if self.unix_clients.len() == MAX_UNIX_CLIENTS {
+                return Err(Error::other("max no. of unix clients reached"));
+            }
+            loop {
+                let i = OsRng.gen_range(UNIX_TOKEN_MIN..(UNIX_TOKEN_MAX + 1));
+                if let Entry::Vacant(v) = self.unix_clients.entry(i) {
+                    self.poll
+                        .registry()
+                        .register(&mut stream, Token(i), Interest::READABLE)?;
+                    v.insert(UnixClient::new(stream)?);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn process_unix_client_event(
+        event: &Event,
+        client: &mut UnixClient,
+        servers: &[Server],
+        poll: &mut Poll,
+    ) -> Result<(), Error> {
+        let mut interest: Option<Interest> = None;
+        if event.is_readable() {
+            while let Some(request) = client.read_request()? {
+                let response = match request {
+                    Request::Status => Response::Status(Ok(Status {
+                        servers: servers.iter().map(Into::into).collect(),
+                    })),
+                };
+                client.send_response(&response)?;
+            }
+            if !client.flush()? {
+                interest = Some(Interest::READABLE | Interest::WRITABLE);
+            }
+        }
+        if event.is_writable() && client.flush()? {
+            interest = Some(Interest::READABLE);
+        }
+        if let Some(interest) = interest {
+            poll.registry()
+                .reregister(&mut SourceFd(&client.fd), UNIX_SERVER_TOKEN, interest)?;
         }
         Ok(())
     }
@@ -255,8 +374,19 @@ struct Server {
     public_key: PublicKey,
     hub: Option<Hub>,
     spokes: Vec<Spoke>,
-    other_peers: Vec<OtherPeer>,
+    other_peers: Vec<Peer>,
     config: ServerConfig,
+}
+
+impl From<&Server> for wgsr::Server {
+    fn from(other: &Server) -> Self {
+        Self {
+            socket_addr: other.socket_addr,
+            hub: other.hub.as_ref().map(Into::into),
+            spokes: other.spokes.iter().map(Into::into).collect(),
+            peers: other.other_peers.clone(),
+        }
+    }
 }
 
 struct Hub {
@@ -265,33 +395,64 @@ struct Hub {
     socket_addr: SocketAddr,
 }
 
-struct Spoke {
-    public_key: PublicKey,
-    session: Session,
-    socket_addr: SocketAddr,
-}
-
-struct OtherPeer {
-    socket_addr: SocketAddr,
-    session_index: SessionIndex,
-    status: OtherPeerStatus,
-    peer_type: PeerType,
-}
-
-enum OtherPeerStatus {
-    Pending,
-    Authorized,
-}
-
-impl OtherPeerStatus {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Pending => "pending",
-            Self::Authorized => "authorized",
+impl From<&Hub> for wgsr::Hub {
+    fn from(other: &Hub) -> Self {
+        Self {
+            socket_addr: other.socket_addr,
+            public_key: other.public_key,
+            session_index: other.session.sender_index().into(),
         }
+    }
+}
+
+type Spoke = Hub;
+
+struct UnixClient {
+    fd: RawFd,
+    reader: BufReader<UnixStream>,
+    writer: BufWriter<UnixStream>,
+}
+
+impl UnixClient {
+    fn new(stream: UnixStream) -> Result<Self, Error> {
+        let stream: std::os::unix::net::UnixStream = stream.into();
+        let fd = stream.as_raw_fd();
+        let input_stream = UnixStream::from_std(stream.try_clone()?);
+        let output_stream = UnixStream::from_std(stream);
+        Ok(Self {
+            fd,
+            reader: BufReader::with_capacity(MAX_UNIX_PACKET_SIZE, input_stream),
+            writer: BufWriter::with_capacity(MAX_UNIX_PACKET_SIZE, output_stream),
+        })
+    }
+
+    fn read_request(&mut self) -> Result<Option<Request>, Error> {
+        let buf = self.reader.fill_buf()?;
+        let (request, n): (Request, usize) =
+            match decode_from_slice(buf, bincode::config::standard()) {
+                Err(DecodeError::UnexpectedEnd { .. }) => return Ok(None),
+                other => other,
+            }?;
+        self.reader.consume(n);
+        Ok(Some(request))
+    }
+
+    fn send_response(&mut self, response: &Response) -> Result<(), Error> {
+        encode_into_std_write(response, &mut self.writer, bincode::config::standard())?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<bool, Error> {
+        self.writer.flush()?;
+        Ok(self.writer.buffer().is_empty())
     }
 }
 
 const MAX_EVENTS: usize = 1024;
 const MAX_PACKET_SIZE: usize = 65535;
 const WAKE_TOKEN: Token = Token(usize::MAX);
+const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 1);
+const MAX_UNIX_CLIENTS: usize = 1000;
+const UNIX_TOKEN_MAX: usize = usize::MAX - 2;
+const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
+const MAX_UNIX_PACKET_SIZE: usize = 4096 * 16;
