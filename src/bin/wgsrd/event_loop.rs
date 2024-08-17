@@ -31,9 +31,7 @@ use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
-use wgsr::format_error;
 use wgsr::EncodeDecode;
-use wgsr::Error;
 use wgsr::Peer;
 use wgsr::PeerKind;
 use wgsr::PeerStatus;
@@ -45,7 +43,10 @@ use wgsr::ToBase64;
 use wgsr::MAX_REQUEST_SIZE;
 use wgsr::MAX_RESPONSE_SIZE;
 
+use crate::format_error;
+use crate::get_internet_addresses;
 use crate::Config;
+use crate::Error;
 use crate::PeerConfig;
 use crate::ServerConfig;
 
@@ -332,7 +333,7 @@ impl EventLoop {
                     } => {
                         let response =
                             Self::add_relay(listen_port, persistent, config_file, poll, servers)
-                                .map_err(|e| RequestError(e.to_string()));
+                                .map_err(RequestError::map);
                         Response::RelayAdd(response)
                     }
                     Request::RelayRemove {
@@ -341,7 +342,7 @@ impl EventLoop {
                     } => {
                         let response =
                             Self::remove_relay(listen_port, persistent, config_file, servers)
-                                .map_err(|e| RequestError(e.to_string()));
+                                .map_err(RequestError::map);
                         Response::RelayRemove(response)
                     }
                     Request::HubAdd {
@@ -356,7 +357,7 @@ impl EventLoop {
                             config_file,
                             servers,
                         )
-                        .map_err(|e| RequestError(e.to_string()));
+                        .map_err(RequestError::map);
                         Response::HubAdd(response)
                     }
                     Request::HubRemove {
@@ -371,7 +372,7 @@ impl EventLoop {
                             config_file,
                             servers,
                         )
-                        .map_err(|e| RequestError(e.to_string()));
+                        .map_err(RequestError::map);
                         Response::HubRemove(response)
                     }
                     Request::SpokeAdd {
@@ -386,7 +387,7 @@ impl EventLoop {
                             config_file,
                             servers,
                         )
-                        .map_err(|e| RequestError(e.to_string()));
+                        .map_err(RequestError::map);
                         Response::SpokeAdd(response)
                     }
                     Request::SpokeRemove {
@@ -401,8 +402,13 @@ impl EventLoop {
                             config_file,
                             servers,
                         )
-                        .map_err(|e| RequestError(e.to_string()));
+                        .map_err(RequestError::map);
                         Response::SpokeRemove(response)
+                    }
+                    Request::Export { listen_port } => {
+                        let response =
+                            Self::export_config(listen_port, servers).map_err(RequestError::map);
+                        Response::Export(response)
                     }
                 };
                 client.send_response(&response)?;
@@ -627,6 +633,44 @@ impl EventLoop {
             })?;
         }
         Ok(())
+    }
+
+    fn export_config(
+        listen_port: NonZeroU16,
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<String, Error> {
+        use std::fmt::Write;
+        let port: u16 = listen_port.into();
+        let relay = servers
+            .get_mut(&port)
+            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
+        let mut buf = String::with_capacity(4096);
+        writeln!(&mut buf, "# wgsr authentication peer")?;
+        writeln!(&mut buf, "[Peer]")?;
+        writeln!(&mut buf, "PublicKey = {}", relay.public_key.to_base64())?;
+        let mut internet_addresses = get_internet_addresses()?;
+        internet_addresses.sort();
+        let mut iter = internet_addresses.into_iter();
+        match iter.next() {
+            Some(addr) => {
+                writeln!(&mut buf, "Endpoint = {}:{}", addr, relay.socket_addr.port())?;
+            }
+            None => {
+                writeln!(&mut buf, "# no internet addresses found")?;
+                writeln!(&mut buf, "# Endpoint = ")?;
+            }
+        }
+        for addr in iter {
+            writeln!(
+                &mut buf,
+                "# Endpoint = {}:{}",
+                addr,
+                relay.socket_addr.port()
+            )?;
+        }
+        writeln!(&mut buf, "PersistentKeepalive = 23")?;
+        writeln!(&mut buf, "AllowedIPs =")?;
+        Ok(buf)
     }
 
     fn add_spoke(

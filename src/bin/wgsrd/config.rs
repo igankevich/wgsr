@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 
+use crate::format_error;
 use crate::parse_config;
 use crate::Error;
-use wgsr::format_error;
 use wgsr::FromBase64;
 use wgsr::PeerKind;
 use wgsr::ToBase64;

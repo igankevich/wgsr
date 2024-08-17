@@ -61,6 +61,11 @@ enum Command {
         #[command(subcommand)]
         command: SpokeCommand,
     },
+    /// Export peer configuration.
+    Export {
+        /// Listen port.
+        listen_port: NonZeroU16,
+    },
 }
 
 #[derive(Subcommand)]
@@ -235,6 +240,15 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        Some(Command::Export { listen_port }) => {
+            let mut client = UnixClient::new(args.unix_socket_path)?;
+            let config = match client.call(Request::Export { listen_port })? {
+                Response::Export(result) => result?,
+                _ => return Ok(ExitCode::FAILURE),
+            };
+            print!("{}", config);
+            Ok(ExitCode::SUCCESS)
+        }
         None => Ok(ExitCode::FAILURE),
     }
 }
@@ -285,5 +299,5 @@ fn base64_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Sen
 where
     T: FromBase64,
 {
-    Ok(T::from_base64(s).map_err(|e| e.to_string())?)
+    Ok(T::from_base64(s).map_err(|_| "base64 i/o error")?)
 }
