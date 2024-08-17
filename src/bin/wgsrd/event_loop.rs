@@ -6,6 +6,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::num::NonZeroU16;
@@ -608,9 +609,10 @@ impl EventLoop {
         let mut iter = internet_addresses.into_iter();
         let port = relay.socket_addr.port();
         match iter.next() {
-            Some(addr) => {
-                writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?;
-            }
+            Some(addr) => match addr {
+                IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
+                IpAddr::V6(addr) => writeln!(&mut buf, "Endpoint = [{}]:{}", addr, port)?,
+            },
             None => {
                 writeln!(&mut buf, "# no internet addresses found")?;
                 writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
