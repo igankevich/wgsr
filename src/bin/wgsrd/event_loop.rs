@@ -108,7 +108,6 @@ impl EventLoop {
         let mut events = Events::with_capacity(MAX_EVENTS);
         let mut buffer = [0_u8; MAX_PACKET_SIZE];
         loop {
-            //self.dump();
             events.clear();
             match self.poll.poll(&mut events, None) {
                 Ok(()) => Ok(()),

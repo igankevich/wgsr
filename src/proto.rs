@@ -118,6 +118,18 @@ impl PeerStatus {
     }
 }
 
+impl Display for PeerStatus {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Debug for PeerStatus {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
 pub enum PeerKind {
     Hub,
@@ -130,6 +142,18 @@ impl PeerKind {
             Self::Hub => "hub",
             Self::Spoke => "spoke",
         }
+    }
+}
+
+impl Display for PeerKind {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Debug for PeerKind {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }
 

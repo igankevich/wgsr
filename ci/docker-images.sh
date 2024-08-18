@@ -14,7 +14,7 @@ LABEL org.opencontainers.image.description="WGSR image"
 LABEL org.opencontainers.image.version=$version
 LABEL org.opencontainers.image.licenses=GPL-3.0
 LABEL org.opencontainers.image.authors="Ivan Gankevich <ivan@igankevich.com>"
-CMD ["/bin/wgsr"]
+CMD ["/bin/wgsrd"]
 EOF
     docker build \
         --tag "$image1" --tag "$image2" \

@@ -7,17 +7,18 @@ use std::path::PathBuf;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
-
-use crate::format_error;
-use crate::parse_config;
-use crate::Error;
 use wgsr::FromBase64;
 use wgsr::PeerKind;
 use wgsr::ToBase64;
 use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
+use crate::format_error;
+use crate::parse_config;
+use crate::Error;
+
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgsrd.conf";
 
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct Config {
     pub(crate) servers: Vec<ServerConfig>,
     pub(crate) unix_socket_path: PathBuf,
@@ -41,6 +42,7 @@ impl Config {
         let mut preshared_key: Option<PrivateKey> = None;
         let mut public_key: Option<PublicKey> = None;
         let mut listen_port: Option<NonZeroU16> = None;
+        let mut unix_socket_path: Option<PathBuf> = None;
         let add_peer = |servers: &mut Vec<ServerConfig>,
                         public_key: Option<PublicKey>,
                         kind: PeerKind|
@@ -98,6 +100,7 @@ impl Config {
                    listen_port: Option<NonZeroU16>|
          -> Result<(), Error> {
             match prev_section.as_deref() {
+                Some("Unix") => Ok(()),
                 Some("Relay") => add_server(servers, private_key, preshared_key, listen_port),
                 Some("Hub") => add_peer(servers, public_key, PeerKind::Hub),
                 Some("Spoke") => add_peer(servers, public_key, PeerKind::Spoke),
@@ -119,6 +122,10 @@ impl Config {
             }
             prev_section = section.map(ToString::to_string);
             match section {
+                Some(section @ "Unix") => match key {
+                    "UnixSocketPath" => unix_socket_path = Some(value.into()),
+                    key => return Err(format_error!("unknown key under `{}`: `{}`", section, key)),
+                },
                 Some("Relay") => match key {
                     "PrivateKey" => private_key = Some(FromBase64::from_base64(value)?),
                     "ListenPort" => listen_port = Some(value.parse().map_err(Error::other)?),
@@ -145,7 +152,7 @@ impl Config {
         validate_servers(servers.as_slice())?;
         Ok(Self {
             servers,
-            unix_socket_path: DEFAULT_UNIX_SOCKET_PATH.into(),
+            unix_socket_path: unix_socket_path.unwrap_or_else(|| DEFAULT_UNIX_SOCKET_PATH.into()),
         })
     }
 
@@ -157,6 +164,12 @@ impl Config {
     fn do_save(&self, path: &Path) -> Result<(), Error> {
         self.validate()?;
         let mut file = File::create(path)?;
+        writeln!(&mut file, "[Unix]")?;
+        writeln!(
+            &mut file,
+            "UnixSocketPath = {}",
+            self.unix_socket_path.display()
+        )?;
         for server in self.servers.iter() {
             writeln!(&mut file, "[Relay]")?;
             writeln!(&mut file, "PrivateKey = {}", server.private_key.to_base64())?;
@@ -203,6 +216,7 @@ pub(crate) struct ServerConfig {
 }
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct PeerConfig {
     pub(crate) public_key: PublicKey,
     pub(crate) kind: PeerKind,
@@ -247,4 +261,107 @@ fn validate_peers(peers: &[PeerConfig], server_public_key: &PublicKey) -> Result
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+    use std::fmt::Formatter;
+
+    use arbitrary::Arbitrary;
+    use arbitrary::Unstructured;
+    use arbtest::arbtest;
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn io() {
+        arbtest(|u| {
+            let expected = Config {
+                servers: u.arbitrary()?,
+                unix_socket_path: arbitrary_path(u)?,
+            };
+            let file = NamedTempFile::new().unwrap();
+            expected.save(file.path()).unwrap();
+            let actual = Config::open(file.path()).unwrap();
+            assert_eq!(expected, actual);
+            Ok(())
+        });
+    }
+
+    fn arbitrary_path(u: &mut Unstructured<'_>) -> Result<PathBuf, arbitrary::Error> {
+        let path: PathBuf = u.arbitrary()?;
+        let string = path.as_path().to_string_lossy().to_string();
+        let string: String = string.chars().filter(|ch| !"#\n".contains(*ch)).collect();
+        Ok(string.trim().into())
+    }
+
+    impl<'a> Arbitrary<'a> for ServerConfig {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let peers: Vec<PeerConfig> = u.arbitrary()?;
+            let mut hubs: Vec<PeerConfig> = Vec::new();
+            let mut spokes: Vec<PeerConfig> = Vec::new();
+            for peer in peers.into_iter() {
+                match peer.kind {
+                    PeerKind::Hub => hubs.push(peer),
+                    PeerKind::Spoke => spokes.push(peer),
+                }
+            }
+            // at most one hub is allowed
+            if let Some(hub) = hubs.into_iter().next() {
+                spokes.push(hub);
+            }
+            Ok(Self {
+                private_key: u.arbitrary::<[u8; 32]>()?.into(),
+                preshared_key: u.arbitrary::<[u8; 32]>()?.into(),
+                listen_port: u.arbitrary()?,
+                peers: spokes,
+            })
+        }
+    }
+
+    impl Debug for ServerConfig {
+        fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+            f.debug_struct("ServerConfig")
+                .field("private_key", &self.private_key.to_base64())
+                .field("preshared_key", &self.preshared_key.to_base64())
+                .field("listen_port", &self.listen_port)
+                .field("peers", &self.peers)
+                .finish()
+        }
+    }
+
+    impl PartialEq for ServerConfig {
+        fn eq(&self, other: &Self) -> bool {
+            self.private_key.as_bytes() == other.private_key.as_bytes()
+                && self.preshared_key.as_bytes() == other.preshared_key.as_bytes()
+                && self.listen_port == other.listen_port
+                && self.peers == other.peers
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for PeerConfig {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
+            Ok(Self {
+                public_key: (&private_key).into(),
+                kind: u.arbitrary::<ArbitraryPeerKind>()?.0,
+            })
+        }
+    }
+
+    struct ArbitraryPeerKind(PeerKind);
+
+    impl<'a> Arbitrary<'a> for ArbitraryPeerKind {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let i: bool = u.arbitrary()?;
+            Ok(Self(match i {
+                false => PeerKind::Hub,
+                true => PeerKind::Spoke,
+            }))
+        }
+    }
+
+    impl Eq for ServerConfig {}
 }
