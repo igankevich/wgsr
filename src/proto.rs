@@ -268,7 +268,6 @@ mod tests {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             let i: usize = u.arbitrary()?;
             let i = i % 8;
-            let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
             Ok(match i {
                 0 => Request::Status,
                 1 => Request::RelayAdd {
@@ -281,22 +280,22 @@ mod tests {
                 },
                 3 => Request::HubAdd {
                     listen_port: u.arbitrary()?,
-                    public_key: (&private_key).into(),
+                    public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
                 4 => Request::HubRemove {
                     listen_port: u.arbitrary()?,
-                    public_key: (&private_key).into(),
+                    public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
                 5 => Request::SpokeAdd {
                     listen_port: u.arbitrary()?,
-                    public_key: (&private_key).into(),
+                    public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
                 6 => Request::SpokeRemove {
                     listen_port: u.arbitrary()?,
-                    public_key: (&private_key).into(),
+                    public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
                 _ => Request::Export {
@@ -304,6 +303,11 @@ mod tests {
                 },
             })
         }
+    }
+
+    fn arbitrary_public_key(u: &mut Unstructured<'_>) -> Result<PublicKey, arbitrary::Error> {
+        let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
+        Ok((&private_key).into())
     }
 
     impl<'a> Arbitrary<'a> for Server {
@@ -319,10 +323,9 @@ mod tests {
 
     impl<'a> Arbitrary<'a> for Hub {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
-            let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
             Ok(Self {
                 socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
-                public_key: (&private_key).into(),
+                public_key: arbitrary_public_key(u)?,
                 session_index: u.arbitrary()?,
             })
         }
