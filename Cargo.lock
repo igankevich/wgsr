@@ -637,6 +637,7 @@ dependencies = [
  "network-interface",
  "rand",
  "rand_core",
+ "static_assertions",
  "tempfile",
  "test_bin",
  "wgproto",
