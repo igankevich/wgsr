@@ -607,8 +607,8 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wgproto"
-version = "0.3.0"
-source = "git+https://github.com/igankevich/wgproto?tag=0.3.0#276f86baac20134665514298b6716d7708387f14"
+version = "0.4.0"
+source = "git+https://github.com/igankevich/wgproto?tag=0.4.0#03d51f53a90ee59b6c0d2ebafce690b68b21df14"
 dependencies = [
  "blake2",
  "chacha20poly1305",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "wgsr"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arbitrary",
  "arbtest",
