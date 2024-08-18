@@ -322,6 +322,7 @@ impl EventLoop {
             client.fill_buf()?;
             while let Some(request) = client.read_request()? {
                 let response = match request {
+                    Request::Running => Response::Running(Ok(())),
                     Request::Status => Response::Status(Ok(Status {
                         servers: servers.iter().map(|(_, v)| v.into()).collect(),
                     })),
@@ -561,7 +562,7 @@ impl EventLoop {
             .peers
             .retain(|peer| peer.kind != PeerKind::Hub || peer.public_key != public_key);
         let new_len = relay.config.peers.len();
-        if new_len != old_len {
+        if new_len == old_len {
             return Err(format_error!(
                 "no hub with public key `{}`",
                 public_key.to_base64()
@@ -695,7 +696,7 @@ impl EventLoop {
             .peers
             .retain(|peer| peer.kind != PeerKind::Spoke || peer.public_key != public_key);
         let new_len = relay.config.peers.len();
-        if new_len != old_len {
+        if new_len == old_len {
             return Err(format_error!(
                 "no hub with public key `{}`",
                 public_key.to_base64()

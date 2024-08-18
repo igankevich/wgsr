@@ -20,11 +20,12 @@ use wgproto::PublicKey;
 pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgsrd-socket";
 pub const MAX_REQUEST_SIZE: usize = 4096;
 pub const MAX_RESPONSE_SIZE: usize = 4096 * 16;
-const MAX_SIZE: usize = MAX_RESPONSE_SIZE;
+const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub enum Request {
+    Running,
     Status,
     RelayAdd {
         listen_port: Option<NonZeroU16>,
@@ -66,6 +67,7 @@ pub enum Request {
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub enum Response {
+    Running(Result<(), RequestError>),
     Status(Result<Status, RequestError>),
     RelayAdd(Result<NonZeroU16, RequestError>),
     RelayRemove(Result<(), RequestError>),
@@ -228,6 +230,10 @@ const fn bincode_config() -> Configuration<
         .with_limit::<MAX_SIZE>()
 }
 
+const fn const_max(a: usize, b: usize) -> usize {
+    [a, b][(a < b) as usize]
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -266,34 +272,34 @@ mod tests {
 
     impl<'a> Arbitrary<'a> for Request {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
-            let i: usize = u.arbitrary()?;
-            let i = i % 8;
+            let i: usize = u.int_in_range(0..=8)?;
             Ok(match i {
-                0 => Request::Status,
-                1 => Request::RelayAdd {
+                0 => Request::Running,
+                1 => Request::Status,
+                2 => Request::RelayAdd {
                     listen_port: u.arbitrary()?,
                     persistent: u.arbitrary()?,
                 },
-                2 => Request::RelayRemove {
+                3 => Request::RelayRemove {
                     listen_port: u.arbitrary()?,
                     persistent: u.arbitrary()?,
                 },
-                3 => Request::HubAdd {
-                    listen_port: u.arbitrary()?,
-                    public_key: arbitrary_public_key(u)?,
-                    persistent: u.arbitrary()?,
-                },
-                4 => Request::HubRemove {
+                4 => Request::HubAdd {
                     listen_port: u.arbitrary()?,
                     public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
-                5 => Request::SpokeAdd {
+                5 => Request::HubRemove {
                     listen_port: u.arbitrary()?,
                     public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,
                 },
-                6 => Request::SpokeRemove {
+                6 => Request::SpokeAdd {
+                    listen_port: u.arbitrary()?,
+                    public_key: arbitrary_public_key(u)?,
+                    persistent: u.arbitrary()?,
+                },
+                7 => Request::SpokeRemove {
                     listen_port: u.arbitrary()?,
                     public_key: arbitrary_public_key(u)?,
                     persistent: u.arbitrary()?,

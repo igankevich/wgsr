@@ -44,6 +44,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check if wgsr daemon is running.
+    Running,
     /// Get relay status.
     Status,
     /// Relay commands.
@@ -142,6 +144,14 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     match args.command {
+        Some(Command::Running) => {
+            let mut client = UnixClient::new(args.unix_socket_path)?;
+            match client.call(Request::Running)? {
+                Response::Running(status) => status?,
+                _ => return Ok(ExitCode::FAILURE),
+            };
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Command::Status) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             let status = match client.call(Request::Status)? {
@@ -154,14 +164,16 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Some(Command::Relay { command }) => match command {
             RelayCommand::Add { listen_port } => {
                 let mut client = UnixClient::new(args.unix_socket_path)?;
-                let listen_port = match client.call(Request::RelayAdd {
+                let allocated_listen_port = match client.call(Request::RelayAdd {
                     listen_port,
                     persistent: true,
                 })? {
                     Response::RelayAdd(listen_port) => listen_port?,
                     _ => return Ok(ExitCode::FAILURE),
                 };
-                println!("{}", listen_port);
+                if listen_port.is_none() {
+                    println!("{}", allocated_listen_port);
+                }
                 Ok(ExitCode::SUCCESS)
             }
             RelayCommand::Rm { listen_port } => {
@@ -254,6 +266,9 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 fn print_status(status: &Status) {
+    if status.servers.is_empty() {
+        return;
+    }
     println!(
         "{:<23}{:<23}{:<23}{:<23}{:<23}{:<46}",
         "Local", "Type", "Status", "Remote", "Session", "PublicKey"
