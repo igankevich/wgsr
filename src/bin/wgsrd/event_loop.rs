@@ -436,22 +436,35 @@ impl EventLoop {
         if servers.len() == MAX_RELAYS {
             return Err(format_error!("max. no. of relays reached"));
         }
-        let listen_port: u16 = match listen_port {
-            Some(listen_port) => listen_port.into(),
+        let (socket_addr, mut socket, listen_port) = match listen_port {
+            Some(listen_port) => {
+                let port: u16 = listen_port.into();
+                let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+                let socket = UdpSocket::bind(socket_addr)?;
+                (socket_addr, socket, listen_port)
+            }
             None => loop {
                 let port: u16 = OsRng.gen_range(RELAY_TOKEN_MIN..(RELAY_TOKEN_MAX + 1)) as u16;
-                if !servers.contains_key(&port) {
-                    break port;
+                if servers.contains_key(&port) {
+                    continue;
                 }
+                let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+                let socket = match UdpSocket::bind(socket_addr) {
+                    Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        continue;
+                    }
+                    other => other,
+                }?;
+                break (socket_addr, socket, port.try_into().map_err(Error::other)?);
             },
         };
-        let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), listen_port);
         let private_key = PrivateKey::random();
         let preshared_key = PresharedKey::random();
-        let mut socket = UdpSocket::bind(socket_addr)?;
-        poll.registry()
-            .register(&mut socket, Token(listen_port as usize), Interest::READABLE)?;
-        let non_zero_listen_port: NonZeroU16 = listen_port.try_into().map_err(Error::other)?;
+        poll.registry().register(
+            &mut socket,
+            Token(socket_addr.port() as usize),
+            Interest::READABLE,
+        )?;
         let server = Server {
             socket_addr,
             socket,
@@ -462,7 +475,7 @@ impl EventLoop {
             config: ServerConfig {
                 private_key,
                 preshared_key,
-                listen_port: non_zero_listen_port,
+                listen_port,
                 peers: Default::default(),
             },
         };
@@ -472,8 +485,8 @@ impl EventLoop {
                 Ok(())
             })?;
         }
-        servers.insert(listen_port, server);
-        Ok(non_zero_listen_port)
+        servers.insert(socket_addr.port(), server);
+        Ok(listen_port)
     }
 
     fn remove_relay(
@@ -837,6 +850,6 @@ const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 1);
 const MAX_UNIX_CLIENTS: usize = 1000;
 const UNIX_TOKEN_MAX: usize = usize::MAX - 2;
 const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
-const RELAY_TOKEN_MAX: usize = UNIX_TOKEN_MIN - 1;
+const RELAY_TOKEN_MAX: usize = u16::MAX as usize;
 const RELAY_TOKEN_MIN: usize = 1001;
 const MAX_RELAYS: usize = RELAY_TOKEN_MAX - RELAY_TOKEN_MIN + 1;
