@@ -357,8 +357,8 @@ mod tests {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             let i: bool = u.arbitrary()?;
             Ok(Self(match i {
-                false => PeerKind::Hub,
-                true => PeerKind::Spoke,
+                true => PeerKind::Hub,
+                false => PeerKind::Spoke,
             }))
         }
     }
