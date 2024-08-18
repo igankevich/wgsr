@@ -16,6 +16,7 @@ jobs:
     env:
       TZ: Europe/Berlin
       RUST_BACKTRACE: 1
+      CIJAIL_LOOPBACK: 1
       CIJAIL_ENDPOINTS: |
         https://github.com/lyz-code/yamlfix/
         https://pypi.org/simple/
