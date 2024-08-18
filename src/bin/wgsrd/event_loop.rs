@@ -443,20 +443,7 @@ impl EventLoop {
                 let socket = UdpSocket::bind(socket_addr)?;
                 (socket_addr, socket, listen_port)
             }
-            None => loop {
-                let port: u16 = OsRng.gen_range(RELAY_TOKEN_MIN..(RELAY_TOKEN_MAX + 1)) as u16;
-                if servers.contains_key(&port) {
-                    continue;
-                }
-                let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
-                let socket = match UdpSocket::bind(socket_addr) {
-                    Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                        continue;
-                    }
-                    other => other,
-                }?;
-                break (socket_addr, socket, port.try_into().map_err(Error::other)?);
-            },
+            None => Self::allocate_listen_port(servers)?,
         };
         let private_key = PrivateKey::random();
         let preshared_key = PresharedKey::random();
@@ -487,6 +474,30 @@ impl EventLoop {
         }
         servers.insert(socket_addr.port(), server);
         Ok(listen_port)
+    }
+
+    fn allocate_listen_port(
+        servers: &mut HashMap<u16, Server>,
+    ) -> Result<(SocketAddr, UdpSocket, NonZeroU16), Error> {
+        const MAX_ATTEMPTS: usize = 99999;
+        for _ in 0..MAX_ATTEMPTS {
+            let port: u16 = OsRng.gen_range(RELAY_TOKEN_MIN..(RELAY_TOKEN_MAX + 1)) as u16;
+            if servers.contains_key(&port) {
+                continue;
+            }
+            let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
+            let socket = match UdpSocket::bind(socket_addr) {
+                Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    continue;
+                }
+                other => other,
+            }?;
+            return Ok((socket_addr, socket, port.try_into().map_err(Error::other)?));
+        }
+        Err(format_error!(
+            "failed to allocate listen port in {} attempts",
+            MAX_ATTEMPTS
+        ))
     }
 
     fn remove_relay(
