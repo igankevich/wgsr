@@ -16,7 +16,6 @@ jobs:
     env:
       TZ: Europe/Berlin
       RUST_BACKTRACE: 1
-      CIJAIL_LOOPBACK: 1
       CIJAIL_ENDPOINTS: |
         https://github.com/lyz-code/yamlfix/
         https://pypi.org/simple/
@@ -33,7 +32,7 @@ jobs:
       - name: Lint
         run: cijail ./ci/lint.sh
       - name: Test
-        run: cijail ./ci/test.sh
+        run: ./ci/test.sh
       - name: Binaries
         run: cijail ./ci/binaries.sh
       - name: Docker images
