@@ -29,12 +29,14 @@ use wgproto::Context;
 use wgproto::DecodeWithContext;
 use wgproto::InputBuffer;
 use wgproto::Message;
+use wgproto::MessageKind;
 use wgproto::PresharedKey;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
 use wgsr::EncodeDecode;
+use wgsr::ExportFormat;
 use wgsr::Peer;
 use wgsr::PeerKind;
 use wgsr::PeerStatus;
@@ -143,7 +145,7 @@ impl EventLoop {
                         )
                     }
                     Token(i) => {
-                        let port = (i - RELAY_TOKEN_MIN) as u16;
+                        let port = i as u16;
                         let peer = match self.servers.get_mut(&port) {
                             Some(peer) => peer,
                             None => continue,
@@ -167,18 +169,21 @@ impl EventLoop {
         let packet = &buffer[..n];
         let mut buffer = InputBuffer::new(packet);
         let mut context = Context::new(&server.public_key);
+        context.check_macs = false;
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
+        let kind = message.kind();
         match message {
             Message::HandshakeInitiation(message) => {
                 let sender_index = message.sender_index;
-                let result = Responder::respond(
-                    server.public_key,
-                    server.config.private_key.clone(),
-                    &server.config.preshared_key,
-                    message,
-                );
-                match result {
-                    Ok((session, initiation, response_bytes)) => {
+                context.check_macs = true;
+                match context.verify(&mut buffer) {
+                    Ok(_) => {
+                        let (session, initiation, response_bytes) = Responder::respond(
+                            server.public_key,
+                            server.config.private_key.clone(),
+                            &server.config.preshared_key,
+                            message,
+                        )?;
                         let peer = match server
                             .config
                             .peers
@@ -210,7 +215,18 @@ impl EventLoop {
                                 });
                             }
                         }
+                        eprintln!(
+                            "{}->:{} {}->wgsr {:?}",
+                            from, server.config.listen_port, peer.kind, kind
+                        );
                         server.socket.send_to(response_bytes.as_slice(), from)?;
+                        eprintln!(
+                            ":{}->{} wgsr->{} {:?}",
+                            server.config.listen_port,
+                            from,
+                            peer.kind,
+                            MessageKind::HandshakeResponse
+                        );
                     }
                     Err(e) => match server.hub.as_mut() {
                         Some(hub) => {
@@ -223,7 +239,7 @@ impl EventLoop {
                                 status: PeerStatus::Pending,
                                 kind: PeerKind::Spoke,
                             });
-                            eprintln!("forward handshake-initiation from {} to hub", from);
+                            eprintln!("{}->{} spoke->hub {:?}", from, hub.socket_addr, kind);
                             server.socket.send_to(packet, hub.socket_addr)?;
                         }
                         None => return Err(e.into()),
@@ -232,17 +248,16 @@ impl EventLoop {
             }
             Message::HandshakeResponse(message) => match server.hub.as_mut() {
                 Some(hub) => {
-                    eprintln!(
-                        "handshake-response from {} receiver {}",
-                        from, message.receiver_index
-                    );
                     if from == hub.socket_addr {
                         if let Some(other_peer) = server.other_peers.iter_mut().find(|other_peer| {
                             other_peer.session_index == message.receiver_index.as_u32()
                         }) {
-                            eprintln!("authorize");
                             other_peer.status = PeerStatus::Authorized;
                             server.socket.send_to(packet, other_peer.socket_addr)?;
+                            eprintln!(
+                                "{}->{} hub->spoke {:?}",
+                                hub.socket_addr, other_peer.socket_addr, kind
+                            );
                         }
                         // add hub as a peer
                         server.other_peers.push(Peer {
@@ -260,18 +275,29 @@ impl EventLoop {
                     Some(hub) => {
                         if from == hub.socket_addr {
                             if message.receiver_index == hub.session.sender_index() {
-                                let data = hub.session.receive(&message)?;
-                                eprintln!("received {:?}", data);
+                                let _data = hub.session.receive(&message)?;
                             } else if let Some(other_peer) =
                                 server.other_peers.iter_mut().find(|other_peer| {
                                     other_peer.session_index == message.receiver_index.as_u32()
                                 })
                             {
-                                eprintln!("send packet from hub to {}", other_peer.socket_addr);
+                                eprintln!(
+                                    "{}->{} hub->spoke {:?}({})",
+                                    from,
+                                    other_peer.socket_addr,
+                                    kind,
+                                    packet.len(),
+                                );
                                 server.socket.send_to(packet, other_peer.socket_addr)?;
                             }
                         } else {
-                            eprintln!("send packet from {} to hub", from);
+                            eprintln!(
+                                "{}->{} spoke->hub {:?}({})",
+                                from,
+                                hub.socket_addr,
+                                kind,
+                                packet.len(),
+                            );
                             server.socket.send_to(packet, hub.socket_addr)?;
                         }
                     }
@@ -405,9 +431,12 @@ impl EventLoop {
                         .map_err(RequestError::map);
                         Response::SpokeRemove(response)
                     }
-                    Request::Export { listen_port } => {
-                        let response =
-                            Self::export_config(listen_port, servers).map_err(RequestError::map);
+                    Request::Export {
+                        listen_port,
+                        format,
+                    } => {
+                        let response = Self::export_config(listen_port, format, servers)
+                            .map_err(RequestError::map);
                         Response::Export(response)
                     }
                 };
@@ -618,6 +647,7 @@ impl EventLoop {
 
     fn export_config(
         listen_port: NonZeroU16,
+        format: ExportFormat,
         servers: &mut HashMap<u16, Server>,
     ) -> Result<String, Error> {
         use std::fmt::Write;
@@ -625,34 +655,45 @@ impl EventLoop {
         let relay = servers
             .get_mut(&port)
             .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
-        let mut buf = String::with_capacity(4096);
-        writeln!(&mut buf, "# wgsr authentication peer")?;
-        writeln!(&mut buf, "[Peer]")?;
-        writeln!(&mut buf, "PublicKey = {}", relay.public_key.to_base64())?;
-        let mut internet_addresses = get_internet_addresses()?;
-        internet_addresses.sort();
-        let mut iter = internet_addresses.into_iter();
-        let port = relay.socket_addr.port();
-        match iter.next() {
-            Some(addr) => match addr {
-                IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
-                IpAddr::V6(addr) => writeln!(&mut buf, "Endpoint = [{}]:{}", addr, port)?,
-            },
-            None => {
-                writeln!(&mut buf, "# no internet addresses found")?;
-                writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
+        match format {
+            ExportFormat::Config => {
+                let mut buf = String::with_capacity(4096);
+                writeln!(&mut buf, "# wgsr authentication peer")?;
+                writeln!(&mut buf, "[Peer]")?;
+                writeln!(&mut buf, "PublicKey = {}", relay.public_key.to_base64())?;
+                writeln!(
+                    &mut buf,
+                    "PresharedKey = {}",
+                    relay.config.preshared_key.to_base64()
+                )?;
+                let mut internet_addresses = get_internet_addresses()?;
+                internet_addresses.sort();
+                let mut iter = internet_addresses.into_iter();
+                let port = relay.socket_addr.port();
+                match iter.next() {
+                    Some(addr) => match addr {
+                        IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
+                        IpAddr::V6(addr) => writeln!(&mut buf, "Endpoint = [{}]:{}", addr, port)?,
+                    },
+                    None => {
+                        writeln!(&mut buf, "# no internet addresses found")?;
+                        writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
+                    }
+                }
+                for addr in iter {
+                    match addr {
+                        IpAddr::V4(addr) => writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?,
+                        IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
+                    }
+                }
+                writeln!(&mut buf, "PersistentKeepalive = 23")?;
+                writeln!(&mut buf, "# no IPs are allowed")?;
+                writeln!(&mut buf, "AllowedIPs =")?;
+                Ok(buf)
             }
+            ExportFormat::PublicKey => Ok(relay.public_key.to_base64()),
+            ExportFormat::PresharedKey => Ok(relay.config.preshared_key.to_base64()),
         }
-        for addr in iter {
-            match addr {
-                IpAddr::V4(addr) => writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?,
-                IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
-            }
-        }
-        writeln!(&mut buf, "PersistentKeepalive = 23")?;
-        writeln!(&mut buf, "# no IPs are allowed")?;
-        writeln!(&mut buf, "AllowedIPs =")?;
-        Ok(buf)
     }
 
     fn add_spoke(

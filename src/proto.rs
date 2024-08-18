@@ -61,6 +61,7 @@ pub enum Request {
     },
     Export {
         listen_port: NonZeroU16,
+        format: ExportFormat,
     },
 }
 
@@ -164,6 +165,36 @@ impl Display for PeerKind {
 }
 
 impl Debug for PeerKind {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
+#[cfg_attr(test, derive(arbitrary::Arbitrary))]
+pub enum ExportFormat {
+    Config,
+    PublicKey,
+    PresharedKey,
+}
+
+impl ExportFormat {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Config => "config",
+            Self::PublicKey => "public-key",
+            Self::PresharedKey => "preshared-key",
+        }
+    }
+}
+
+impl Display for ExportFormat {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Debug for ExportFormat {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -306,6 +337,7 @@ mod tests {
                 },
                 _ => Request::Export {
                     listen_port: u.arbitrary()?,
+                    format: u.arbitrary()?,
                 },
             })
         }
