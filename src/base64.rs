@@ -3,6 +3,7 @@ use base64::Engine;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 
+#[derive(Debug)]
 pub struct Base64Error;
 
 pub trait FromBase64 {
