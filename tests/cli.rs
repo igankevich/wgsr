@@ -36,9 +36,7 @@ fn relay_add_remove_port() {
     let output = wgsrd.wgsr(["relay", "add", "20000"]).output().unwrap();
     assert_success!(output);
     let output = wgsrd.wgsr(["status"]).output().unwrap();
-    assert!(output.status.success());
-    assert!(!output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_output!(output);
     let output = wgsrd.wgsr(["relay", "rm", "20000"]).output().unwrap();
     assert_success!(output);
     let output = wgsrd.wgsr(["relay", "rm", "20000"]).output().unwrap();
@@ -52,16 +50,16 @@ fn relay_add_remove_random_port() {
     let wgsrd = Wgsrd::new();
     wgsrd.wait_until_started();
     let output = wgsrd.wgsr(["relay", "add"]).output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let port = String::from_utf8(output.stdout).unwrap();
+    let port = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
+    let port = port.trim();
+    assert_output!(output);
     let output = wgsrd.wgsr(["status"]).output().unwrap();
     assert!(output.status.success());
     assert!(!output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-    let output = wgsrd.wgsr(["relay", "rm", port.trim()]).output().unwrap();
+    let output = wgsrd.wgsr(["relay", "rm", port]).output().unwrap();
     assert_success!(output);
-    let output = wgsrd.wgsr(["relay", "rm", port.trim()]).output().unwrap();
+    let output = wgsrd.wgsr(["relay", "rm", port]).output().unwrap();
     assert_failure!(output);
     let output = wgsrd.wgsr(["status"]).output().unwrap();
     assert_success!(output);
@@ -74,10 +72,9 @@ fn hub_add_remove() {
     let output = wgsrd.wgsr(["hub", "add"]).output().unwrap();
     assert_failure!(output);
     let output = wgsrd.wgsr(["relay", "add"]).output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let port = String::from_utf8(output.stdout).unwrap();
+    let port = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
     let port = port.trim();
+    assert_output!(output);
     let private_key = PrivateKey::random();
     let public_key: PublicKey = (&private_key).into();
     let public_key = public_key.to_base64();
@@ -111,10 +108,9 @@ fn spoke_add_remove() {
     let output = wgsrd.wgsr(["spoke", "add"]).output().unwrap();
     assert_failure!(output);
     let output = wgsrd.wgsr(["relay", "add"]).output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let port = String::from_utf8(output.stdout).unwrap();
+    let port = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
     let port = port.trim();
+    assert_output!(output);
     let private_key = PrivateKey::random();
     let public_key: PublicKey = (&private_key).into();
     let public_key = public_key.to_base64();
@@ -148,10 +144,9 @@ fn export() {
     let output = wgsrd.wgsr(["export", "12345"]).output().unwrap();
     assert_failure!(output);
     let output = wgsrd.wgsr(["relay", "add"]).output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let port = String::from_utf8(output.stdout).unwrap();
+    let port = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
     let port = port.trim();
+    assert_output!(output);
     let output = wgsrd.wgsr(["export", port]).output().unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -262,5 +257,22 @@ macro_rules! assert_failure {
         );
         assert!(stdout.is_empty(), "Stdout\n----------\n{}", stdout);
         assert!(!stderr.is_empty(), "Stderr\n----------\n{}", stderr);
+    };
+}
+
+#[macro_export]
+macro_rules! assert_output {
+    ($output:expr) => {
+        let output = $output;
+        let stdout = String::from_utf8_lossy(output.stdout.as_slice());
+        let stderr = String::from_utf8_lossy(output.stderr.as_slice());
+        assert!(
+            output.status.success(),
+            "Stderr\n----------\n{}----------\n\nStdout\n----------\n{}",
+            stderr,
+            stdout
+        );
+        assert!(!stdout.is_empty(), "Stdout\n----------\n{}", stdout);
+        assert!(stderr.is_empty(), "Stderr\n----------\n{}", stderr);
     };
 }
