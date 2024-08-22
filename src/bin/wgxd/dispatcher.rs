@@ -39,7 +39,6 @@ impl Dispatcher {
     pub(crate) fn run(mut self) -> Result<(), Error> {
         let mut events = Events::with_capacity(MAX_EVENTS);
         loop {
-            self.wg_relay.dump();
             events.clear();
             match self.poll.poll(&mut events, None) {
                 Ok(()) => Ok(()),

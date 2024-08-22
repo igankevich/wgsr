@@ -418,33 +418,6 @@ impl WireguardRelay {
     pub(crate) fn public_key(&self) -> &PublicKey {
         &self.public_key
     }
-
-    pub(crate) fn dump(&self) {
-        for (public_key, peer) in self.auth_peers.iter() {
-            eprintln!(
-                "auth-peer {} {} {}->{}",
-                public_key.to_base64(),
-                peer.socket_addr,
-                peer.session.sender_index(),
-                peer.session.receiver_index()
-            );
-        }
-        for (hub, spokes) in self.hub_to_spokes.iter() {
-            for spoke in spokes.iter() {
-                eprintln!("edge {} {}", hub.to_base64(), spoke.to_base64());
-            }
-        }
-        for ((sender_socket_addr, receiver_index), receiver_public_key) in
-            self.session_to_destination.iter()
-        {
-            eprintln!(
-                "route {} {} -> {}",
-                sender_socket_addr,
-                receiver_index,
-                receiver_public_key.to_base64()
-            );
-        }
-    }
 }
 
 struct AuthPeer {

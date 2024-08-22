@@ -1,7 +1,6 @@
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 use std::time::SystemTime;
 
 use clap::Parser;
@@ -18,6 +17,7 @@ use self::error::*;
 use self::units::*;
 use self::unix::*;
 use crate::format_bytes;
+use crate::format_duration;
 
 mod error;
 mod units;
@@ -211,18 +211,6 @@ fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: Sys
     match now.duration_since(latest_handshake) {
         Ok(d) => format!("{} ago", format_duration(d)),
         Err(_) => default.to_string(),
-    }
-}
-
-fn format_duration(duration: Duration) -> String {
-    const RULES: [(u64, &str); 2] = [(60_u64 * 60_u64, "hours"), (60_u64, "minutes")];
-    let seconds = duration.as_secs();
-    match RULES.iter().find(|(factor, _)| seconds >= *factor) {
-        Some((factor, unit)) => {
-            let fractional = (seconds as f64) / (*factor as f64);
-            format!("{:.2} {}", fractional, unit)
-        }
-        None => format!("{} seconds", seconds),
     }
 }
 
