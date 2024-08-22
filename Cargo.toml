@@ -15,6 +15,7 @@ mio = { version = "1.0.1", features = ["net", "os-poll", "os-ext"], default-feat
 network-interface = "2.0.0"
 rand = { version = "0.8.5", features = [], default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
+serde = "1.0.208"
 static_assertions = "1.1.0"
 wgproto = { version = "0.4.0", git = "https://github.com/igankevich/wgproto", tag = "0.4.0" }
 x25519-dalek = { version = "2.0.1", features = ["serde"] }

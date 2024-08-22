@@ -461,9 +461,13 @@ impl EventLoop {
                 let response = match request {
                     Request::Running => Response::Running,
                     Request::Status => Response::Status(Ok(Status {
-                        auth_peers: Default::default(), //udp_server.auth_peers.iter().map(|(k, v)| (k, v.into())).collect(),
-                        peers: Default::default(),
-                        routes: Default::default(),
+                        auth_peers: udp_server
+                            .auth_peers
+                            .iter()
+                            .map(|(k, v)| (*k, v.into()))
+                            .collect(),
+                        destination_to_public_key: Default::default(),
+                        hub_to_spokes: Default::default(),
                     })),
                     Request::Export { format } => {
                         let response =
@@ -563,6 +567,16 @@ struct UdpServer {
 struct AuthPeer {
     session: Session,
     socket_addr: SocketAddr,
+}
+
+impl From<&AuthPeer> for wgsr::AuthPeer {
+    fn from(other: &AuthPeer) -> Self {
+        Self {
+            socket_addr: other.socket_addr,
+            sender_index: other.session.sender_index().as_u32(),
+            receiver_index: other.session.receiver_index().as_u32(),
+        }
+    }
 }
 
 struct UnixClient {

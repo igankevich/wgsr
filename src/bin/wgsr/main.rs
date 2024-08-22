@@ -165,27 +165,28 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 fn print_status(status: &Status) {
-    println!(
-        "{:<23}{:<23}{:<23}{:<23}{:<46}",
-        "Type", "Status", "Remote", "Session", "PublicKey"
-    );
-    for peer in status.auth_peers.iter() {
-        println!(
-            "{:<23}{:<23}{:<23}{:<23}{}",
-            "auth",
-            "authorized",
+    for (public_key, peer) in status.auth_peers.iter() {
+        eprintln!(
+            "auth-peer {} {} {}->{}",
+            public_key.to_base64(),
             peer.socket_addr,
-            peer.session_index,
-            peer.public_key.to_base64(),
+            peer.sender_index,
+            peer.receiver_index
         );
     }
-    for peer in status.peers.iter() {
-        println!(
-            "{:<23}{:<23}{:<23}{:<23}",
-            "peer",
-            peer.status.as_str(),
-            peer.socket_addr,
-            peer.session_index,
+    for (hub, spokes) in status.hub_to_spokes.iter() {
+        for spoke in spokes.iter() {
+            eprintln!("edge {} {}", hub.to_base64(), spoke.to_base64());
+        }
+    }
+    for ((sender_socket_addr, receiver_index), receiver_public_key) in
+        status.destination_to_public_key.iter()
+    {
+        eprintln!(
+            "route {} {} -> {}",
+            sender_socket_addr,
+            receiver_index,
+            receiver_public_key.to_base64()
         );
     }
     println!("-");

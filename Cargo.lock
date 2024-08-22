@@ -637,6 +637,7 @@ dependencies = [
  "network-interface",
  "rand",
  "rand_core",
+ "serde",
  "static_assertions",
  "tempfile",
  "test_bin",

@@ -16,6 +16,8 @@ use bincode::error::DecodeError;
 use bincode::error::EncodeError;
 use bincode::Decode;
 use bincode::Encode;
+use serde::Deserialize;
+use serde::Serialize;
 use wgproto::PublicKey;
 
 pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgsrd-socket";
@@ -32,7 +34,7 @@ pub enum Request {
 }
 
 #[derive(Decode, Encode)]
-#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
 pub enum Response {
     Running,
     Status(Result<Status, RequestError>),
@@ -42,19 +44,20 @@ pub enum Response {
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct Status {
-    pub auth_peers: Vec<AuthPeer>,
-    pub peers: Vec<Peer>,
     #[bincode(with_serde)]
-    pub routes: HashMap<PublicKey, HashSet<PublicKey>>,
+    pub auth_peers: HashMap<PublicKey, AuthPeer>,
+    #[bincode(with_serde)]
+    pub destination_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
+    #[bincode(with_serde)]
+    pub hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
 }
 
-#[derive(Decode, Encode)]
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct AuthPeer {
     pub socket_addr: SocketAddr,
-    #[bincode(with_serde)]
-    pub public_key: PublicKey,
-    pub session_index: u32,
+    pub sender_index: u32,
+    pub receiver_index: u32,
 }
 
 #[derive(Decode, Encode, Clone)]
@@ -200,8 +203,7 @@ mod tests {
 
     #[test]
     fn response_io() {
-        // TODO
-        //test_io::<Response>();
+        test_io::<Response>();
     }
 
     #[test]
@@ -235,6 +237,38 @@ mod tests {
         }
     }
 
+    impl<'a> Arbitrary<'a> for Status {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                auth_peers: u
+                    .arbitrary::<HashMap<[u8; 32], AuthPeer>>()?
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v))
+                    .collect(),
+                destination_to_public_key: u
+                    .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
+                    .into_iter()
+                    .map(|((k0, k1), v)| ((k0.0, k1), v.into()))
+                    .collect(),
+                hub_to_spokes: u
+                    .arbitrary::<HashMap<[u8; 32], HashSet<[u8; 32]>>>()?
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))
+                    .collect(),
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for AuthPeer {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
+                sender_index: u.arbitrary()?,
+                receiver_index: u.arbitrary()?,
+            })
+        }
+    }
+
     impl<'a> Arbitrary<'a> for Peer {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
@@ -245,6 +279,7 @@ mod tests {
         }
     }
 
+    #[derive(PartialEq, Eq, Hash)]
     struct ArbitrarySocketAddr(SocketAddr);
 
     impl<'a> Arbitrary<'a> for ArbitrarySocketAddr {
