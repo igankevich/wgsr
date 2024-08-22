@@ -5,11 +5,11 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use wgsr::UnixEncodeDecode;
-use wgsr::UnixRequest;
-use wgsr::UnixResponse;
-use wgsr::MAX_REQUEST_SIZE;
-use wgsr::MAX_RESPONSE_SIZE;
+use wgx::UnixEncodeDecode;
+use wgx::UnixRequest;
+use wgx::UnixResponse;
+use wgx::MAX_REQUEST_SIZE;
+use wgx::MAX_RESPONSE_SIZE;
 
 use crate::format_error;
 use crate::Error;

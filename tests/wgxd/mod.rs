@@ -13,7 +13,7 @@ use tempfile::tempdir;
 use tempfile::TempDir;
 use test_bin::get_test_bin;
 
-pub struct Wgsrd {
+pub struct Wgxd {
     #[allow(dead_code)]
     workdir: TempDir,
     unix_socket_path: PathBuf,
@@ -21,12 +21,12 @@ pub struct Wgsrd {
     child: Child,
 }
 
-impl Wgsrd {
+impl Wgxd {
     pub fn new() -> Self {
         use std::fmt::Write;
         let workdir = tempdir().unwrap();
-        let config_file = workdir.path().join("wgsrd.conf");
-        let unix_socket_path = workdir.path().join(".wgsrd-socket");
+        let config_file = workdir.path().join("wgxd.conf");
+        let unix_socket_path = workdir.path().join(".wgxd-socket");
         let listen_port = random_port();
         let mut config = String::new();
         writeln!(
@@ -37,7 +37,7 @@ impl Wgsrd {
         )
         .unwrap();
         std::fs::write(config_file.as_path(), config).unwrap();
-        let child = get_test_bin("wgsrd")
+        let child = get_test_bin("wgxd")
             .args([config_file.as_path()])
             .spawn()
             .unwrap();
@@ -56,19 +56,19 @@ impl Wgsrd {
     pub fn wait_until_started(&self) {
         const NUM_SECONDS: usize = 7;
         for i in 1..=NUM_SECONDS {
-            let output = self.wgsr(["running"]).output().unwrap();
+            let output = self.wgx(["running"]).output().unwrap();
             if output.status.success() {
                 return;
             }
             if i >= 3 {
-                eprintln!("waiting for wgsrd to start... {}", i);
+                eprintln!("waiting for wgxd to start... {}", i);
             }
             sleep(Duration::from_millis(777));
         }
-        panic!("wgsrd has not stared in {}s", NUM_SECONDS);
+        panic!("wgxd has not stared in {}s", NUM_SECONDS);
     }
 
-    pub fn wgsr<I, S>(&self, args: I) -> Command
+    pub fn wgx<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -82,13 +82,13 @@ impl Wgsrd {
         for arg in rest {
             args.push(arg.as_ref().into());
         }
-        let mut command = get_test_bin("wgsr");
+        let mut command = get_test_bin("wgx");
         command.args(args);
         command
     }
 }
 
-impl Drop for Wgsrd {
+impl Drop for Wgxd {
     fn drop(&mut self) {
         self.child.kill().unwrap();
     }

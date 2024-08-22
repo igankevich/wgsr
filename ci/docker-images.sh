@@ -4,17 +4,17 @@
 
 build_docker_image() {
     install -m0755 -D -t "$workdir"/bin \
-        target/x86_64-unknown-linux-musl/release/wgsrd \
-        target/x86_64-unknown-linux-musl/release/wgsr
+        target/x86_64-unknown-linux-musl/release/wgxd \
+        target/x86_64-unknown-linux-musl/release/wgx
     cat >"$workdir"/Dockerfile <<EOF
 FROM scratch
 COPY ./bin /bin
-LABEL org.opencontainers.image.source=https://github.com/igankevich/wgsr
+LABEL org.opencontainers.image.source=https://github.com/igankevich/wgx
 LABEL org.opencontainers.image.description="WGSR image"
 LABEL org.opencontainers.image.version=$version
 LABEL org.opencontainers.image.licenses=GPL-3.0
 LABEL org.opencontainers.image.authors="Ivan Gankevich <ivan@igankevich.com>"
-CMD ["/bin/wgsrd"]
+CMD ["/bin/wgxd"]
 EOF
     docker build \
         --tag "$image1" --tag "$image2" \
@@ -23,8 +23,8 @@ EOF
 }
 
 test_docker_image() {
-    docker run --rm "$image1" /bin/wgsrd --version
-    docker run --rm "$image1" /bin/wgsr --version
+    docker run --rm "$image1" /bin/wgxd --version
+    docker run --rm "$image1" /bin/wgx --version
 }
 
 push_docker_image() {
@@ -41,10 +41,10 @@ push_docker_image() {
 }
 
 version="$(git describe --tags --always)"
-image1=ghcr.io/igankevich/wgsr:"$version"
-image2=docker.io/igankevich/wgsr:"$version"
-image3=ghcr.io/igankevich/wgsr:latest
-image4=docker.io/igankevich/wgsr:latest
+image1=ghcr.io/igankevich/wgx:"$version"
+image2=docker.io/igankevich/wgx:"$version"
+image3=ghcr.io/igankevich/wgx:latest
+image4=docker.io/igankevich/wgx:latest
 
 build_docker_image
 test_docker_image

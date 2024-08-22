@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs::File;
@@ -6,19 +5,19 @@ use std::io::Write;
 use std::num::NonZeroU16;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
-use wgsr::FromBase64;
-use wgsr::ToBase64;
-use wgsr::DEFAULT_UNIX_SOCKET_PATH;
+use wgx::AllowedPublicKeys;
+use wgx::FromBase64;
+use wgx::ToBase64;
+use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use crate::format_error;
 use crate::parse_config;
 use crate::Error;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgsrd.conf";
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgxd.conf";
 pub(crate) const DEFAULT_LISTEN_PORT: u16 = 8787;
 
 pub(crate) struct Config {
@@ -119,56 +118,9 @@ impl Display for Config {
     }
 }
 
-#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
-pub(crate) enum AllowedPublicKeys {
-    All,
-    Set(HashSet<PublicKey>),
-}
-
-impl Default for AllowedPublicKeys {
-    fn default() -> Self {
-        Self::Set(Default::default())
-    }
-}
-
-impl Display for AllowedPublicKeys {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        match self {
-            Self::All => write!(f, "all"),
-            Self::Set(public_keys) => {
-                let mut iter = public_keys.iter();
-                if let Some(public_key) = iter.next() {
-                    write!(f, "{}", public_key.to_base64())?;
-                }
-                for public_key in iter {
-                    write!(f, ", {}", public_key.to_base64())?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-impl FromStr for AllowedPublicKeys {
-    type Err = Error;
-    fn from_str(other: &str) -> Result<Self, Self::Err> {
-        if other == "all" {
-            return Ok(Self::All);
-        }
-        let mut public_keys: HashSet<PublicKey> = HashSet::new();
-        for item in other.split(',') {
-            let item = item.trim();
-            if item.is_empty() {
-                continue;
-            }
-            public_keys.insert(FromBase64::from_base64(item)?);
-        }
-        Ok(Self::Set(public_keys))
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fmt::Debug;
     use std::fmt::Formatter;
 
@@ -178,24 +130,6 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
-
-    fn test_io<T: FromStr + ToString + PartialEq + Debug + for<'a> Arbitrary<'a>>()
-    where
-        <T as std::str::FromStr>::Err: Debug,
-    {
-        arbtest(|u| {
-            let expected: T = u.arbitrary()?;
-            let string = expected.to_string();
-            let actual = string.parse().unwrap();
-            assert_eq!(expected, actual);
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn allowed_public_keys_io() {
-        test_io::<AllowedPublicKeys>();
-    }
 
     #[test]
     fn save_load() {
@@ -221,7 +155,7 @@ mod tests {
             Ok(Self {
                 private_key: u.arbitrary::<[u8; 32]>()?.into(),
                 listen_port: u.arbitrary()?,
-                allowed_public_keys: u.arbitrary()?,
+                allowed_public_keys: u.arbitrary::<ArbitraryAllowedPublicKeys>()?.0,
                 unix_socket_path: arbitrary_path(u)?,
             })
         }
@@ -249,10 +183,13 @@ mod tests {
 
     impl Eq for Config {}
 
-    impl<'a> Arbitrary<'a> for AllowedPublicKeys {
+    #[derive(Debug)]
+    struct ArbitraryAllowedPublicKeys(AllowedPublicKeys);
+
+    impl<'a> Arbitrary<'a> for ArbitraryAllowedPublicKeys {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             let i: usize = u.int_in_range(0..=1)?;
-            Ok(match i {
+            Ok(ArbitraryAllowedPublicKeys(match i {
                 0 => AllowedPublicKeys::All,
                 _ => AllowedPublicKeys::Set(
                     u.arbitrary::<HashSet<[u8; 32]>>()?
@@ -260,7 +197,7 @@ mod tests {
                         .map(Into::into)
                         .collect(),
                 ),
-            })
+            }))
         }
     }
 }

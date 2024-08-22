@@ -17,12 +17,12 @@ use mio::unix::SourceFd;
 use mio::{Interest, Poll, Token};
 use rand::Rng;
 use rand_core::OsRng;
-use wgsr::UnixEncodeDecode;
-use wgsr::UnixRequest;
-use wgsr::UnixRequestError;
-use wgsr::UnixResponse;
-use wgsr::MAX_REQUEST_SIZE;
-use wgsr::MAX_RESPONSE_SIZE;
+use wgx::UnixEncodeDecode;
+use wgx::UnixRequest;
+use wgx::UnixRequestError;
+use wgx::UnixResponse;
+use wgx::MAX_REQUEST_SIZE;
+use wgx::MAX_RESPONSE_SIZE;
 
 use crate::Error;
 use crate::WireguardRelay;
@@ -105,7 +105,7 @@ impl UnixServer {
             while let Some(request) = client.read_request()? {
                 let response = match request {
                     UnixRequest::Running => UnixResponse::Running,
-                    UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status())),
+                    UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status()?)),
                     UnixRequest::Export { format } => {
                         let response = wg_relay
                             .export_config(format)

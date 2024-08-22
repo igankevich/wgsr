@@ -66,14 +66,14 @@ impl From<ipnet::PrefixLenError> for Error {
     }
 }
 
-impl From<wgsr::Base64Error> for Error {
-    fn from(_other: wgsr::Base64Error) -> Self {
+impl From<wgx::Base64Error> for Error {
+    fn from(_other: wgx::Base64Error) -> Self {
         Self::other("base64 i/o error")
     }
 }
 
-impl From<wgsr::RpcError> for Error {
-    fn from(_other: wgsr::RpcError) -> Self {
+impl From<wgx::RpcError> for Error {
+    fn from(_other: wgx::RpcError) -> Self {
         Self::other("rpc error")
     }
 }

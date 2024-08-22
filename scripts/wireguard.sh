@@ -8,7 +8,7 @@ cleanup() {
 
 set -ex
 trap cleanup EXIT
-image=wgsr/wireguard-client:latest
+image=wgx/wireguard-client:latest
 workdir="$(mktemp -d)"
 cat >"$workdir"/Dockerfile <<'EOF'
 FROM docker.io/ubuntu:latest

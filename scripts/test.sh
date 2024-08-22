@@ -7,9 +7,9 @@ cleanup() {
 
 cleanup_docker() {
     set +e
-    docker container rm wgsr hub spoke
-    docker kill wgsr hub spoke
-    docker network rm wgsr
+    docker container rm wgx hub spoke
+    docker kill wgx hub spoke
+    docker network rm wgx
     set -e
 }
 
@@ -24,7 +24,7 @@ run_local() {
     sudo ip link add wgtest type wireguard
     sudo ip link set wgtest up
     sudo wg setconf wgtest "$workdir"/hub.conf
-    ../target/debug/wgsr "$workdir"/wgsr.conf
+    ../target/debug/wgx "$workdir"/wgx.conf
     exit
 }
 
@@ -35,9 +35,9 @@ wgclient() {
         --cap-add NET_ADMIN \
         --name "$1" \
         --volume "$workdir":/workdir \
-        --network wgsr \
+        --network wgx \
         --ip "$2" \
-        wgsr/wireguard-client:latest \
+        wgx/wireguard-client:latest \
         sh -c "
 ip link add wgtest type wireguard
 ip link set dev wgtest up
@@ -53,22 +53,22 @@ run_docker() {
         "$workdir"/spoke.conf
     cat "$workdir"/hub.conf
     cat "$workdir"/spoke.conf
-    docker network create --subnet 10.87.0.0/16 wgsr >/dev/null
+    docker network create --subnet 10.87.0.0/16 wgx >/dev/null
     wgclient hub 10.87.2.1
     wgclient spoke 10.87.2.2
     docker run \
         --rm \
         -it \
-        --name wgsr \
+        --name wgx \
         --volume "$workdir":/workdir \
         --volume "$PWD/..":/src \
-        --network wgsr \
+        --network wgx \
         --ip 10.87.1.1 \
         docker.io/rust:latest \
         sh -c '
 cd /src
 cargo b
-./target/debug/wgsr /workdir/wgsr.conf
+./target/debug/wgx /workdir/wgx.conf
 '
 }
 
@@ -76,15 +76,15 @@ set -ex
 trap cleanup EXIT
 workdir="$(mktemp -d)"
 umask 0077
-generate_keys wgsr
+generate_keys wgx
 generate_keys hub
 generate_keys spoke
-wg genpsk >"$workdir"/wgsr-preshared-key
+wg genpsk >"$workdir"/wgx-preshared-key
 wg genpsk >"$workdir"/spoke-preshared-key
-cat >"$workdir"/wgsr.conf <<EOF
+cat >"$workdir"/wgx.conf <<EOF
 [Relay]
-PrivateKey = $(cat "$workdir"/wgsr-private-key)
-PresharedKey = $(cat "$workdir"/wgsr-preshared-key)
+PrivateKey = $(cat "$workdir"/wgx-private-key)
+PresharedKey = $(cat "$workdir"/wgx-preshared-key)
 ListenPort = 10000
 
 [Hub]
@@ -100,8 +100,8 @@ PrivateKey = $(cat "$workdir"/hub-private-key)
 # authorize hub
 [Peer]
 Endpoint = 127.0.0.1:10000
-PublicKey = $(cat "$workdir"/wgsr-public-key)
-PresharedKey = $(cat "$workdir"/wgsr-preshared-key)
+PublicKey = $(cat "$workdir"/wgx-public-key)
+PresharedKey = $(cat "$workdir"/wgx-preshared-key)
 PersistentKeepalive = 23
 
 [Peer]
@@ -116,8 +116,8 @@ PrivateKey = $(cat "$workdir"/spoke-private-key)
 # authorize spoke
 [Peer]
 Endpoint = 127.0.0.1:10000
-PublicKey = $(cat "$workdir"/wgsr-public-key)
-PresharedKey = $(cat "$workdir"/wgsr-preshared-key)
+PublicKey = $(cat "$workdir"/wgx-public-key)
+PresharedKey = $(cat "$workdir"/wgx-preshared-key)
 PersistentKeepalive = 23
 
 [Peer]

@@ -1,29 +1,29 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::panic)]
-use crate::wgsrd::Wgsrd;
+use crate::wgxd::Wgxd;
 
 #[allow(dead_code)]
-mod wgsrd;
+mod wgxd;
 
 #[test]
 fn running() {
-    let wgsrd = Wgsrd::new();
-    wgsrd.wait_until_started();
+    let wgxd = Wgxd::new();
+    wgxd.wait_until_started();
 }
 
 #[test]
 fn status() {
-    let wgsrd = Wgsrd::new();
-    wgsrd.wait_until_started();
-    let output = wgsrd.wgsr(["status"]).output().unwrap();
+    let wgxd = Wgxd::new();
+    wgxd.wait_until_started();
+    let output = wgxd.wgx(["status"]).output().unwrap();
     assert_output!(output);
 }
 
 #[test]
 fn export() {
-    let wgsrd = Wgsrd::new();
-    wgsrd.wait_until_started();
-    let output = wgsrd.wgsr(["export"]).output().unwrap();
+    let wgxd = Wgxd::new();
+    wgxd.wait_until_started();
+    let output = wgxd.wgx(["export"]).output().unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert!(!output.stdout.is_empty());
