@@ -1,4 +1,3 @@
-use human_bytes::human_bytes;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -7,8 +6,8 @@ use std::time::SystemTime;
 
 use clap::Parser;
 use clap::Subcommand;
+use human_bytes::human_bytes;
 use wgproto::PublicKey;
-use wgx::ExportFormat;
 use wgx::FromBase64;
 use wgx::Status;
 use wgx::ToBase64;
@@ -51,18 +50,10 @@ enum Command {
     Running,
     /// Get relay status.
     Status,
+    /// Get relay's public key.
+    PublicKey,
     /// Export peer configuration.
-    Export {
-        /// Output format.
-        #[arg(
-            short = 'f',
-            long = "format",
-            value_name = "config|public-key",
-            default_value = "config",
-            value_parser = export_format_parser,
-        )]
-        format: ExportFormat,
-    },
+    Export,
 }
 
 #[derive(Subcommand)]
@@ -155,9 +146,18 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             print_status(&status);
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Export { format }) => {
+        Some(Command::PublicKey) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
-            let config = match client.call(UnixRequest::Export { format })? {
+            let public_key = match client.call(UnixRequest::PublicKey)? {
+                UnixResponse::PublicKey(result) => result?,
+                _ => return Ok(ExitCode::FAILURE),
+            };
+            print!("{}", public_key.to_base64());
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Export) => {
+            let mut client = UnixClient::new(args.unix_socket_path)?;
+            let config = match client.call(UnixRequest::Export)? {
                 UnixResponse::Export(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
@@ -203,7 +203,6 @@ fn print_status(status: &Status) {
             receiver_public_key.to_base64()
         );
     }
-    println!("-");
 }
 
 fn format_latest_handshake(instant: SystemTime, default: &str, now: SystemTime) -> String {
@@ -237,15 +236,5 @@ fn base64_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Sen
 where
     T: FromBase64,
 {
-    Ok(T::from_base64(s).map_err(|_| "base64 i/o error")?)
-}
-
-fn export_format_parser(
-    s: &str,
-) -> Result<ExportFormat, Box<dyn std::error::Error + Sync + Send + 'static>> {
-    match s {
-        "config" => Ok(ExportFormat::Config),
-        "public-key" => Ok(ExportFormat::PublicKey),
-        other => Err(format!("unknown export format: `{}`", other).into()),
-    }
+    Ok(T::from_base64(s).map_err(|e| e.to_string())?)
 }

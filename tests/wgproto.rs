@@ -27,10 +27,7 @@ fn echo_server_one_hub_one_spoke() {
     // run wgxd
     let wgxd = Wgxd::new();
     wgxd.wait_until_started();
-    let output = wgxd
-        .wgx(["export", "--format=public-key"])
-        .output()
-        .unwrap();
+    let output = wgxd.wgx(["public-key"]).output().unwrap();
     let wgxd_public_key = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
     let wgxd_public_key = PublicKey::from_base64(wgxd_public_key.trim()).unwrap();
     let wgxd_preshared_key: PresharedKey = [0_u8; 32].into();

@@ -106,10 +106,9 @@ impl UnixServer {
                 let response = match request {
                     UnixRequest::Running => UnixResponse::Running,
                     UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status()?)),
-                    UnixRequest::Export { format } => {
-                        let response = wg_relay
-                            .export_config(format)
-                            .map_err(UnixRequestError::map);
+                    UnixRequest::PublicKey => UnixResponse::PublicKey(Ok(*wg_relay.public_key())),
+                    UnixRequest::Export => {
+                        let response = wg_relay.export_config().map_err(UnixRequestError::map);
                         UnixResponse::Export(response)
                     }
                 };
