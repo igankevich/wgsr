@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::mem::take;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -8,6 +9,9 @@ use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
 use wgproto::DecodeWithContext;
 use wgproto::EncodeWithContext;
+use wgproto::EncryptedHandshakeInitiation;
+use wgproto::EncryptedHandshakeResponse;
+use wgproto::EncryptedPacketData;
 use wgproto::InputBuffer;
 use wgproto::MacSigner;
 use wgproto::MacVerifier;
@@ -46,6 +50,7 @@ pub(crate) struct WireguardRelay {
     allowed_public_keys: AllowedPublicKeys,
     socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
     // (sender-socket-address, receiver-index) -> receiver-public-key
+    // (receiver-socket-address, sender-index) -> sender-public-key
     session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
     buffer: Vec<u8>,
 }
@@ -73,219 +78,259 @@ impl WireguardRelay {
 
     pub(crate) fn on_event(&mut self) -> Result<(), Error> {
         let (n, from) = self.socket.recv_from(&mut self.buffer)?;
-        let packet = &self.buffer[..n];
+        let buffer = take(&mut self.buffer);
+        let packet = &buffer[..n];
+        let ret = self.on_packet(packet, from);
+        self.buffer = buffer;
+        ret
+    }
+
+    fn on_packet(&mut self, packet: &[u8], from: SocketAddr) -> Result<(), Error> {
         let mut buffer = InputBuffer::new(packet);
         let mut context = MacVerifier::new(&self.public_key, None);
         context.check_macs = false;
+        if buffer.get(0) == Some(&50) {
+            self.socket.send_to(self.public_key.as_bytes(), from)?;
+            return Ok(());
+        }
         let message = Message::decode_with_context(&mut buffer, &mut context)?;
-        let kind = message.kind();
         match message {
             Message::HandshakeInitiation(message) => {
                 context.check_macs = true;
                 match context.verify(&mut buffer) {
-                    Ok(_) => {
-                        let (session, initiation, response_bytes) = Responder::respond(
-                            self.public_key,
-                            self.private_key.clone(),
-                            &self.preshared_key,
-                            message,
-                        )?;
-                        if let AllowedPublicKeys::Set(allowed_public_keys) =
-                            &self.allowed_public_keys
-                        {
-                            if !allowed_public_keys.contains(&initiation.static_public) {
-                                return Err(format_error!(
-                                    "untrusted public key: `{}`",
-                                    initiation.static_public.to_base64()
-                                ));
-                            }
-                        }
-                        self.socket_addr_to_public_key
-                            .insert(from, initiation.static_public);
-                        // sender and receiver are flipped here
-                        self.session_to_destination
-                            .insert((from, session.sender_index().as_u32()), self.public_key);
-                        self.auth_peers.insert(
-                            initiation.static_public,
-                            AuthPeer {
-                                session,
-                                socket_addr: from,
-                            },
-                        );
-                        eprintln!("{}->wgsr auth-peer->wgsr {:?}", from, kind);
-                        self.socket.send_to(response_bytes.as_slice(), from)?;
-                        eprintln!(
-                            "wgsr->{} wgsr->auth-peer {:?}",
-                            from,
-                            MessageKind::HandshakeResponse
-                        );
-                    }
-                    Err(e) => {
-                        let from_public_key =
-                            self.socket_addr_to_public_key.get(&from).ok_or_else(|| {
-                                format_error!("no route for {:?} from {}: {}", kind, from, e)
-                            })?;
-                        if self.hub_to_spokes.contains_key(from_public_key) {
-                            return Err(format_error!(
-                                "handshake from `{}` failed verification: {}",
-                                from_public_key.to_base64(),
-                                e
-                            ));
-                        }
-                        let to_public_key =
-                            self.spoke_to_hub.get(from_public_key).ok_or_else(|| {
-                                format_error!("no route for {:?} from {}", kind, from)
-                            })?;
-                        let to_socket_addr = self
-                            .auth_peers
-                            .get(to_public_key)
-                            .ok_or_else(|| {
-                                format_error!(
-                                    "no route for {:?} from {}: peer not unauthorized",
-                                    kind,
-                                    from
-                                )
-                            })?
-                            .socket_addr;
-                        eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
-                        self.socket.send_to(packet, to_socket_addr)?;
-                        // sender and receiver are flipped here
-                        self.session_to_destination.insert(
-                            (to_socket_addr, message.sender_index.as_u32()),
-                            *from_public_key,
-                        );
-                    }
+                    Ok(_) => self.on_handshake_initiation(message, from)?,
+                    Err(_) => self.on_other_handshake_initiation(message, from, packet)?,
                 }
             }
             Message::HandshakeResponse(message) => {
-                let from_public_key = self
-                    .socket_addr_to_public_key
-                    .get(&from)
-                    .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
-                if !self.hub_to_spokes.contains_key(from_public_key) {
-                    return Err(format_error!(
-                        "received handshake response from `{}` (spoke)",
-                        from_public_key.to_base64()
-                    ));
-                }
-                let to_public_key = *self
-                    .session_to_destination
-                    .get(&(from, message.receiver_index.as_u32()))
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no route for {:?} from {} session {}",
-                            kind,
-                            from,
-                            message.receiver_index
-                        )
-                    })?;
-                let to_socket_addr = self
-                    .auth_peers
-                    .get(&to_public_key)
-                    .ok_or_else(|| {
-                        format_error!("no route for {:?} from {}: peer not authorized", kind, from)
-                    })?
-                    .socket_addr;
-                self.socket.send_to(packet, to_socket_addr)?;
-                self.session_to_destination
-                    .insert((from, message.receiver_index.as_u32()), to_public_key);
-                self.session_to_destination.insert(
-                    (to_socket_addr, message.sender_index.as_u32()),
-                    *from_public_key,
-                );
-                eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
+                self.on_handshake_response(message, from, packet)?
             }
-            Message::PacketData(message) => {
-                let from_public_key = self
-                    .socket_addr_to_public_key
-                    .get(&from)
-                    .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
-                let (from_kind, to_kind) = if self.hub_to_spokes.contains_key(from_public_key) {
-                    ("hub", "spoke")
-                } else {
-                    ("spoke", "hub")
-                };
-                let to_public_key = self
-                    .session_to_destination
-                    .get(&(from, message.receiver_index.as_u32()))
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no route for {:?} from {} session {}",
-                            kind,
-                            from,
-                            message.receiver_index
-                        )
-                    })?;
-                if to_public_key == &self.public_key {
-                    let session = &mut self
-                        .auth_peers
-                        .get_mut(from_public_key)
-                        .ok_or_else(|| {
-                            format_error!(
-                                "no route for {:?} from {}: peer not authorized",
-                                kind,
-                                from
-                            )
-                        })?
-                        .session;
-                    let data = session.receive(&message)?;
-                    if !data.is_empty() {
-                        let request = RpcRequest::decode(&data)?;
-                        match request.body {
-                            RpcRequestBody::SetPeers(public_keys) => {
-                                for public_key in public_keys.iter() {
-                                    self.spoke_to_hub.insert(*public_key, *from_public_key);
-                                }
-                                self.hub_to_spokes.insert(*from_public_key, public_keys);
-                                let response = RpcResponse {
-                                    request_id: request.id,
-                                    body: RpcResponseBody::SetPeers(Ok(())),
-                                };
-                                let mut response_bytes = Vec::new();
-                                response.encode(&mut response_bytes);
-                                let message = session.send(&response_bytes)?;
-                                let mut buffer = Vec::new();
-                                let mut signer = MacSigner::new(&self.public_key, None);
-                                message.encode_with_context(&mut buffer, &mut signer);
-                                self.socket.send_to(packet, from)?;
-                            }
-                        }
-                    }
-                    eprintln!("received {:?}", data);
-                    eprintln!(
-                        "{}->local {}->wgsr {:?}({})",
-                        from,
-                        from_kind,
-                        kind,
-                        packet.len(),
-                    );
-                } else {
-                    let to_socket_addr = self
-                        .auth_peers
-                        .get(to_public_key)
-                        .ok_or_else(|| {
-                            format_error!(
-                                "no route for {:?} from {}: peer not authorized",
-                                kind,
-                                from
-                            )
-                        })?
-                        .socket_addr;
-                    self.socket.send_to(packet, to_socket_addr)?;
-                    eprintln!(
-                        "{}->{} {}->{} {:?}({})",
-                        from,
-                        to_socket_addr,
-                        from_kind,
-                        to_kind,
-                        kind,
-                        packet.len(),
-                    );
-                }
-            }
+            Message::PacketData(message) => self.on_packet_data(message, from, packet)?,
         }
         Ok(())
     }
+
+    fn on_handshake_initiation(
+        &mut self,
+        message: EncryptedHandshakeInitiation,
+        from: SocketAddr,
+    ) -> Result<(), Error> {
+        let (session, initiation, response_bytes) = Responder::respond(
+            self.public_key,
+            self.private_key.clone(),
+            &self.preshared_key,
+            message,
+        )?;
+        if let AllowedPublicKeys::Set(allowed_public_keys) = &self.allowed_public_keys {
+            if !allowed_public_keys.contains(&initiation.static_public) {
+                return Err(format_error!(
+                    "untrusted public key: `{}`",
+                    initiation.static_public.to_base64()
+                ));
+            }
+        }
+        self.socket_addr_to_public_key
+            .insert(from, initiation.static_public);
+        // sender and receiver are flipped here
+        self.session_to_destination
+            .insert((from, session.sender_index().as_u32()), self.public_key);
+        self.auth_peers.insert(
+            initiation.static_public,
+            AuthPeer {
+                session,
+                socket_addr: from,
+            },
+        );
+        eprintln!(
+            "{}->wgsr auth-peer->wgsr {:?}",
+            from,
+            MessageKind::HandshakeInitiation
+        );
+        self.socket.send_to(response_bytes.as_slice(), from)?;
+        eprintln!(
+            "wgsr->{} wgsr->auth-peer {:?}",
+            from,
+            MessageKind::HandshakeResponse
+        );
+        Ok(())
+    }
+
+    fn on_other_handshake_initiation(
+        &mut self,
+        message: EncryptedHandshakeInitiation,
+        from: SocketAddr,
+        packet: &[u8],
+    ) -> Result<(), Error> {
+        let kind = MessageKind::HandshakeInitiation;
+        let from_public_key = self
+            .socket_addr_to_public_key
+            .get(&from)
+            .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+        if self.hub_to_spokes.contains_key(from_public_key) {
+            return Err(format_error!(
+                "handshake from `{}` failed verification",
+                from_public_key.to_base64()
+            ));
+        }
+        let to_public_key = self
+            .spoke_to_hub
+            .get(from_public_key)
+            .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+        let to_socket_addr = self
+            .auth_peers
+            .get(to_public_key)
+            .ok_or_else(|| {
+                format_error!(
+                    "no route for {:?} from {}: peer not unauthorized",
+                    kind,
+                    from
+                )
+            })?
+            .socket_addr;
+        eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
+        self.socket.send_to(packet, to_socket_addr)?;
+        // sender and receiver are flipped here
+        self.session_to_destination.insert(
+            (to_socket_addr, message.sender_index.as_u32()),
+            *from_public_key,
+        );
+        Ok(())
+    }
+
+    fn on_handshake_response(
+        &mut self,
+        message: EncryptedHandshakeResponse,
+        from: SocketAddr,
+        packet: &[u8],
+    ) -> Result<(), Error> {
+        let kind = MessageKind::HandshakeResponse;
+        let from_public_key = self
+            .socket_addr_to_public_key
+            .get(&from)
+            .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+        if !self.hub_to_spokes.contains_key(from_public_key) {
+            return Err(format_error!(
+                "received handshake response from `{}` (spoke)",
+                from_public_key.to_base64()
+            ));
+        }
+        let to_public_key = *self
+            .session_to_destination
+            .get(&(from, message.receiver_index.as_u32()))
+            .ok_or_else(|| {
+                format_error!(
+                    "no route for {:?} from {} session {}",
+                    kind,
+                    from,
+                    message.receiver_index
+                )
+            })?;
+        let to_socket_addr = self
+            .auth_peers
+            .get(&to_public_key)
+            .ok_or_else(|| {
+                format_error!("no route for {:?} from {}: peer not authorized", kind, from)
+            })?
+            .socket_addr;
+        self.socket.send_to(packet, to_socket_addr)?;
+        self.session_to_destination
+            .insert((from, message.receiver_index.as_u32()), to_public_key);
+        self.session_to_destination.insert(
+            (to_socket_addr, message.sender_index.as_u32()),
+            *from_public_key,
+        );
+        eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
+        Ok(())
+    }
+
+    fn on_packet_data(
+        &mut self,
+        message: EncryptedPacketData,
+        from: SocketAddr,
+        packet: &[u8],
+    ) -> Result<(), Error> {
+        let kind = MessageKind::PacketData;
+        let from_public_key = self
+            .socket_addr_to_public_key
+            .get(&from)
+            .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+        let (from_kind, to_kind) = if self.hub_to_spokes.contains_key(from_public_key) {
+            ("hub", "spoke")
+        } else {
+            ("spoke", "hub")
+        };
+        let to_public_key = self
+            .session_to_destination
+            .get(&(from, message.receiver_index.as_u32()))
+            .ok_or_else(|| {
+                format_error!(
+                    "no route for {:?} from {} session {}",
+                    kind,
+                    from,
+                    message.receiver_index
+                )
+            })?;
+        if to_public_key == &self.public_key {
+            let session = &mut self
+                .auth_peers
+                .get_mut(from_public_key)
+                .ok_or_else(|| {
+                    format_error!("no route for {:?} from {}: peer not authorized", kind, from)
+                })?
+                .session;
+            let data = session.receive(&message)?;
+            if !data.is_empty() {
+                let request = RpcRequest::decode(&data)?;
+                match request.body {
+                    RpcRequestBody::SetPeers(public_keys) => {
+                        for public_key in public_keys.iter() {
+                            self.spoke_to_hub.insert(*public_key, *from_public_key);
+                        }
+                        self.hub_to_spokes.insert(*from_public_key, public_keys);
+                        let response = RpcResponse {
+                            request_id: request.id,
+                            body: RpcResponseBody::SetPeers(Ok(())),
+                        };
+                        let mut response_bytes = Vec::new();
+                        response.encode(&mut response_bytes);
+                        let message = session.send(&response_bytes)?;
+                        let mut buffer = Vec::new();
+                        let mut signer = MacSigner::new(&self.public_key, None);
+                        message.encode_with_context(&mut buffer, &mut signer);
+                        self.socket.send_to(packet, from)?;
+                    }
+                }
+            }
+            eprintln!("received {:?}", data);
+            eprintln!(
+                "{}->local {}->wgsr {:?}({})",
+                from,
+                from_kind,
+                kind,
+                packet.len(),
+            );
+        } else {
+            let to_socket_addr = self
+                .auth_peers
+                .get(to_public_key)
+                .ok_or_else(|| {
+                    format_error!("no route for {:?} from {}: peer not authorized", kind, from)
+                })?
+                .socket_addr;
+            self.socket.send_to(packet, to_socket_addr)?;
+            eprintln!(
+                "{}->{} {}->{} {:?}({})",
+                from,
+                to_socket_addr,
+                from_kind,
+                to_kind,
+                kind,
+                packet.len(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn status(&self) -> Status {
         Status {
             auth_peers: self
