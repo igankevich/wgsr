@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use wgproto::PublicKey;
 
-pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgsrd-socket";
+pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgxd-socket";
 pub const MAX_REQUEST_SIZE: usize = 4096;
 pub const MAX_RESPONSE_SIZE: usize = 4096 * 16;
 const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);

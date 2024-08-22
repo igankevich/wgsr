@@ -1,5 +1,5 @@
 #!/bin/sh
 . ./ci/preamble.sh
-image=ghcr.io/igankevich/wgsr-ci:latest
+image=ghcr.io/igankevich/wgx-ci:latest
 docker build --tag $image - <ci/Dockerfile
 docker push $image

@@ -35,7 +35,7 @@ RUN curl --location --silent --fail --output /usr/local/bin/shfmt https://github
 
 COPY --from=ghcr.io/staex-io/cijail:latest / /usr/local
 
-LABEL org.opencontainers.image.source=https://github.com/igankevich/wgsr
+LABEL org.opencontainers.image.source=https://github.com/igankevich/wgx
 LABEL org.opencontainers.image.description="CI image"
 
 CMD ["/bin/bash"]

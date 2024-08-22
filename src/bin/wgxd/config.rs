@@ -10,15 +10,15 @@ use std::str::FromStr;
 
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
-use wgsr::FromBase64;
-use wgsr::ToBase64;
-use wgsr::DEFAULT_UNIX_SOCKET_PATH;
+use wgx::FromBase64;
+use wgx::ToBase64;
+use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use crate::format_error;
 use crate::parse_config;
 use crate::Error;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgsrd.conf";
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgxd.conf";
 pub(crate) const DEFAULT_LISTEN_PORT: u16 = 8787;
 
 pub(crate) struct Config {

@@ -622,7 +622,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgsr"
+name = "wgx"
 version = "0.4.0"
 dependencies = [
  "arbitrary",

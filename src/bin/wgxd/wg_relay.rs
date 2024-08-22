@@ -23,15 +23,15 @@ use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
-use wgsr::ExportFormat;
-use wgsr::RpcDecode;
-use wgsr::RpcEncode;
-use wgsr::RpcRequest;
-use wgsr::RpcRequestBody;
-use wgsr::RpcResponse;
-use wgsr::RpcResponseBody;
-use wgsr::Status;
-use wgsr::ToBase64;
+use wgx::ExportFormat;
+use wgx::RpcDecode;
+use wgx::RpcEncode;
+use wgx::RpcRequest;
+use wgx::RpcRequestBody;
+use wgx::RpcResponse;
+use wgx::RpcResponseBody;
+use wgx::Status;
+use wgx::ToBase64;
 
 use crate::format_error;
 use crate::get_internet_addresses;
@@ -142,13 +142,13 @@ impl WireguardRelay {
             },
         );
         eprintln!(
-            "{}->wgsr auth-peer->wgsr {:?}",
+            "{}->wgx auth-peer->wgx {:?}",
             from,
             MessageKind::HandshakeInitiation
         );
         self.socket.send_to(response_bytes.as_slice(), from)?;
         eprintln!(
-            "wgsr->{} wgsr->auth-peer {:?}",
+            "wgx->{} wgx->auth-peer {:?}",
             from,
             MessageKind::HandshakeResponse
         );
@@ -303,7 +303,7 @@ impl WireguardRelay {
             }
             eprintln!("received {:?}", data);
             eprintln!(
-                "{}->local {}->wgsr {:?}({})",
+                "{}->local {}->wgx {:?}({})",
                 from,
                 from_kind,
                 kind,
@@ -348,7 +348,7 @@ impl WireguardRelay {
         match format {
             ExportFormat::Config => {
                 let mut buf = String::with_capacity(4096);
-                writeln!(&mut buf, "# wgsr authentication peer")?;
+                writeln!(&mut buf, "# wgx authentication peer")?;
                 writeln!(&mut buf, "[Peer]")?;
                 writeln!(&mut buf, "PublicKey = {}", self.public_key.to_base64())?;
                 let mut internet_addresses = get_internet_addresses()?;
@@ -413,7 +413,7 @@ struct AuthPeer {
     socket_addr: SocketAddr,
 }
 
-impl From<&AuthPeer> for wgsr::AuthPeer {
+impl From<&AuthPeer> for wgx::AuthPeer {
     fn from(other: &AuthPeer) -> Self {
         Self {
             socket_addr: other.socket_addr,

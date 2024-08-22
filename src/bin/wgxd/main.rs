@@ -21,7 +21,7 @@ mod unix;
 mod wg_relay;
 
 fn usage() -> &'static str {
-    "usage:\n  wgsrd [config-file]\n  wgsrd --version\n  wgsrd --help"
+    "usage:\n  wgxd [config-file]\n  wgxd --version\n  wgxd --help"
 }
 
 fn main() -> ExitCode {

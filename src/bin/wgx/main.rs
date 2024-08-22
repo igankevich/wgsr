@@ -5,13 +5,13 @@ use std::process::ExitCode;
 use clap::Parser;
 use clap::Subcommand;
 use wgproto::PublicKey;
-use wgsr::ExportFormat;
-use wgsr::FromBase64;
-use wgsr::Status;
-use wgsr::ToBase64;
-use wgsr::UnixRequest;
-use wgsr::UnixResponse;
-use wgsr::DEFAULT_UNIX_SOCKET_PATH;
+use wgx::ExportFormat;
+use wgx::FromBase64;
+use wgx::Status;
+use wgx::ToBase64;
+use wgx::UnixRequest;
+use wgx::UnixResponse;
+use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
 use self::unix::*;
@@ -44,7 +44,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check if wgsr daemon is running.
+    /// Check if wgx daemon is running.
     Running,
     /// Get relay status.
     Status,
