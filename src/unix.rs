@@ -148,7 +148,7 @@ impl Debug for UnixRequestError {
 
 impl std::error::Error for UnixRequestError {}
 
-pub trait EncodeDecode {
+pub trait UnixEncodeDecode {
     fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError>;
     fn decode<R>(reader: &mut BufReader<R>) -> Result<Self, DecodeError>
     where
@@ -157,7 +157,7 @@ pub trait EncodeDecode {
         R: Read;
 }
 
-impl<T: Encode + Decode> EncodeDecode for T {
+impl<T: Encode + Decode> UnixEncodeDecode for T {
     fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError> {
         encode_into_std_write(self, writer, bincode_config())?;
         Ok(())
@@ -211,14 +211,14 @@ mod tests {
         test_io::<UnixRequest>();
     }
 
-    fn test_io<T: EncodeDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
+    fn test_io<T: UnixEncodeDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
         arbtest(|u| {
             let expected: T = u.arbitrary()?;
             let mut buffer = Vec::with_capacity(4096);
-            EncodeDecode::encode(&expected, &mut buffer).unwrap();
+            UnixEncodeDecode::encode(&expected, &mut buffer).unwrap();
             let mut reader = BufReader::new(Cursor::new(buffer));
             reader.fill_buf().unwrap();
-            let actual = EncodeDecode::decode(&mut reader).unwrap();
+            let actual = UnixEncodeDecode::decode(&mut reader).unwrap();
             assert_eq!(expected, actual);
             Ok(())
         });

@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-use wgsr::EncodeDecode;
+use wgsr::UnixEncodeDecode;
 use wgsr::UnixRequest;
 use wgsr::UnixResponse;
 use wgsr::MAX_REQUEST_SIZE;

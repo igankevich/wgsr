@@ -19,27 +19,16 @@ impl TryFrom<u8> for RpcKind {
     }
 }
 
-pub type RpcRequestId = u64;
+pub type RpcRequestId = u32;
 
-#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
-pub struct RpcRequest {
-    pub id: RpcRequestId,
-    pub body: RpcRequestBody,
+impl RpcEncode for RpcRequestId {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        buffer.extend(self.to_le_bytes());
+    }
 }
 
-impl RpcRequest {
-    pub fn encode_to_vec(&self) -> Vec<u8> {
-        let mut buffer = Vec::new();
-        self.encode(&mut buffer);
-        buffer
-    }
-
-    pub fn encode(&self, buffer: &mut Vec<u8>) {
-        buffer.extend(self.id.to_le_bytes());
-        self.body.encode(buffer);
-    }
-
-    pub fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
+impl RpcDecode for RpcRequestId {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
         let id = RpcRequestId::from_le_bytes(
             buffer
                 .get(..REQUEST_ID_LEN)
@@ -47,7 +36,33 @@ impl RpcRequest {
                 .try_into()
                 .map_err(|_| RpcError::Other)?,
         );
-        let body = RpcRequestBody::decode(&buffer[REQUEST_ID_LEN..])?;
+        Ok(id)
+    }
+}
+
+#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
+pub struct RpcRequest {
+    pub id: RpcRequestId,
+    pub body: RpcRequestBody,
+}
+
+impl RpcEncode for RpcRequest {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        self.id.encode(buffer);
+        self.body.encode(buffer);
+    }
+}
+
+impl RpcDecode for RpcRequest {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
+        let id = buffer
+            .get(..REQUEST_ID_LEN)
+            .ok_or(RpcError::Other)?
+            .decode_from()?;
+        let body = buffer
+            .get(REQUEST_ID_LEN..)
+            .ok_or(RpcError::Other)?
+            .decode_from()?;
         Ok(Self { id, body })
     }
 }
@@ -57,8 +72,8 @@ pub enum RpcRequestBody {
     SetPeers(HashSet<PublicKey>),
 }
 
-impl RpcRequestBody {
-    pub fn encode(&self, buffer: &mut Vec<u8>) {
+impl RpcEncode for RpcRequestBody {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         match self {
             Self::SetPeers(public_keys) => {
                 buffer.push(RpcKind::SetPeers as u8);
@@ -68,8 +83,10 @@ impl RpcRequestBody {
             }
         }
     }
+}
 
-    pub fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
+impl RpcDecode for RpcRequestBody {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
         let kind: RpcKind = (*buffer.first().ok_or(RpcError::Other)?)
             .try_into()
             .map_err(|_| RpcError::Other)?;
@@ -95,21 +112,23 @@ pub struct RpcResponse {
     pub body: RpcResponseBody,
 }
 
-impl RpcResponse {
-    pub fn encode(&self, buffer: &mut Vec<u8>) {
-        buffer.extend(self.request_id.to_le_bytes());
+impl RpcEncode for RpcResponse {
+    fn encode(&self, buffer: &mut Vec<u8>) {
+        self.request_id.encode(buffer);
         self.body.encode(buffer);
     }
+}
 
-    pub fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
-        let request_id = RpcRequestId::from_le_bytes(
-            buffer
-                .get(..REQUEST_ID_LEN)
-                .ok_or(RpcError::Other)?
-                .try_into()
-                .map_err(|_| RpcError::Other)?,
-        );
-        let body = RpcResponseBody::decode(&buffer[REQUEST_ID_LEN..])?;
+impl RpcDecode for RpcResponse {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
+        let request_id = buffer
+            .get(..REQUEST_ID_LEN)
+            .ok_or(RpcError::Other)?
+            .decode_from()?;
+        let body = buffer
+            .get(REQUEST_ID_LEN..)
+            .ok_or(RpcError::Other)?
+            .decode_from()?;
         Ok(Self { request_id, body })
     }
 }
@@ -119,8 +138,8 @@ pub enum RpcResponseBody {
     SetPeers(Result<(), RpcError>),
 }
 
-impl RpcResponseBody {
-    pub fn encode(&self, buffer: &mut Vec<u8>) {
+impl RpcEncode for RpcResponseBody {
+    fn encode(&self, buffer: &mut Vec<u8>) {
         match self {
             Self::SetPeers(result) => {
                 buffer.push(RpcKind::SetPeers as u8);
@@ -131,8 +150,10 @@ impl RpcResponseBody {
             }
         }
     }
+}
 
-    pub fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
+impl RpcDecode for RpcResponseBody {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError> {
         let kind: RpcKind = (*buffer.first().ok_or(RpcError::Other)?)
             .try_into()
             .map_err(|_| RpcError::Other)?;
@@ -166,11 +187,39 @@ impl TryFrom<u8> for RpcError {
     }
 }
 
-const REQUEST_ID_LEN: usize = 8;
+pub trait RpcEncode {
+    fn encode(&self, buffer: &mut Vec<u8>);
+
+    fn encode_to_vec(&self) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        self.encode(&mut buffer);
+        buffer
+    }
+}
+
+pub trait RpcDecode {
+    fn decode(buffer: &[u8]) -> Result<Self, RpcError>
+    where
+        Self: Sized;
+}
+
+pub trait RpcDecodeFrom<T> {
+    fn decode_from(&self) -> Result<T, RpcError>;
+}
+
+impl<T: RpcDecode> RpcDecodeFrom<T> for &[u8] {
+    fn decode_from(&self) -> Result<T, RpcError> {
+        RpcDecode::decode(self)
+    }
+}
+
+const REQUEST_ID_LEN: usize = 4;
 const PUBLIC_KEY_LEN: usize = 32;
 
 #[cfg(test)]
 mod tests {
+
+    use std::fmt::Debug;
 
     use arbitrary::Arbitrary;
     use arbitrary::Unstructured;
@@ -191,24 +240,22 @@ mod tests {
 
     #[test]
     fn rpc_request_io() {
-        arbtest(|u| {
-            let expected: RpcRequest = u.arbitrary()?;
-            let mut buffer = Vec::with_capacity(4096);
-            expected.encode(&mut buffer);
-            let actual = RpcRequest::decode(&buffer).unwrap();
-            assert_eq!(expected, actual);
-            Ok(())
-        });
+        test_io::<RpcRequest>();
     }
 
     #[test]
     fn rpc_response_io() {
+        test_io::<RpcResponse>();
+    }
+
+    fn test_io<T: RpcEncode + RpcDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
         arbtest(|u| {
-            let expected: RpcResponse = u.arbitrary()?;
+            let expected: T = u.arbitrary()?;
             let mut buffer = Vec::with_capacity(4096);
-            expected.encode(&mut buffer);
-            let actual = RpcResponse::decode(&buffer).unwrap();
+            RpcEncode::encode(&expected, &mut buffer);
+            let actual = RpcDecode::decode(&buffer).unwrap();
             assert_eq!(expected, actual);
+            assert!(T::decode(&[]).is_err());
             Ok(())
         });
     }

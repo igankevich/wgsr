@@ -10,6 +10,7 @@ use wgproto::PresharedKey;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgsr::FromBase64;
+use wgsr::RpcEncode;
 use wgsr::RpcRequest;
 use wgsr::RpcRequestBody;
 
