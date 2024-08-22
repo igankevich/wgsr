@@ -40,7 +40,7 @@ use crate::Config;
 use crate::Error;
 use crate::UnixServer;
 
-pub(crate) struct EventLoop {
+pub(crate) struct Dispatcher {
     #[allow(dead_code)]
     config_file: PathBuf,
     poll: Poll,
@@ -48,7 +48,7 @@ pub(crate) struct EventLoop {
     unix_server: UnixServer,
 }
 
-impl EventLoop {
+impl Dispatcher {
     pub(crate) fn new(config: Config, config_file: PathBuf) -> Result<Self, Error> {
         let mut poll = Poll::new()?;
         let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port.into());

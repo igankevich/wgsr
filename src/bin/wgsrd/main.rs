@@ -3,8 +3,8 @@ use std::process::ExitCode;
 
 use self::config::*;
 use self::config_parser::*;
+use self::dispatcher::*;
 use self::error::*;
-use self::event_loop::*;
 use self::network_interface::*;
 use self::unix::*;
 use crate::Config;
@@ -13,8 +13,8 @@ use crate::DEFAULT_CONFIGURATION_FILE_PATH;
 
 mod config;
 mod config_parser;
+mod dispatcher;
 mod error;
-mod event_loop;
 mod network_interface;
 mod unix;
 
@@ -49,7 +49,7 @@ fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
         libc::umask(0o077);
     }
     let config = Config::open(config_file)?;
-    let event_loop = EventLoop::new(config, config_file.to_path_buf())?;
+    let event_loop = Dispatcher::new(config, config_file.to_path_buf())?;
     let waker = event_loop.waker()?;
     ctrlc::set_handler(move || {
         let _ = waker.wake();
