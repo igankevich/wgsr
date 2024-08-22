@@ -25,7 +25,7 @@ use wgsr::MAX_REQUEST_SIZE;
 use wgsr::MAX_RESPONSE_SIZE;
 
 use crate::Error;
-use crate::UdpServer;
+use crate::WireguardRelay;
 
 pub(crate) struct UnixServer {
     listener: UnixListener,
@@ -91,7 +91,7 @@ impl UnixServer {
     pub(crate) fn on_client_event(
         &mut self,
         event: &Event,
-        udp_server: &mut UdpServer,
+        wg_relay: &mut WireguardRelay,
         poll: &mut Poll,
     ) -> Result<(), Error> {
         if event.is_error() {
@@ -108,9 +108,9 @@ impl UnixServer {
             while let Some(request) = client.read_request()? {
                 let response = match request {
                     UnixRequest::Running => UnixResponse::Running,
-                    UnixRequest::Status => UnixResponse::Status(Ok(udp_server.status())),
+                    UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status())),
                     UnixRequest::Export { format } => {
-                        let response = udp_server
+                        let response = wg_relay
                             .export_config(format)
                             .map_err(UnixRequestError::map);
                         UnixResponse::Export(response)

@@ -7,6 +7,7 @@ use self::dispatcher::*;
 use self::error::*;
 use self::network_interface::*;
 use self::unix::*;
+use self::wg_relay::*;
 use crate::Config;
 use crate::Error;
 use crate::DEFAULT_CONFIGURATION_FILE_PATH;
@@ -17,6 +18,7 @@ mod dispatcher;
 mod error;
 mod network_interface;
 mod unix;
+mod wg_relay;
 
 fn usage() -> &'static str {
     "usage:\n  wgsrd [config-file]\n  wgsrd --version\n  wgsrd --help"
