@@ -4,6 +4,7 @@ use std::mem::take;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
@@ -23,6 +24,7 @@ use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
+use wgx::AllowedPublicKeys;
 use wgx::ExportFormat;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
@@ -35,7 +37,6 @@ use wgx::ToBase64;
 
 use crate::format_error;
 use crate::get_internet_addresses;
-use crate::AllowedPublicKeys;
 use crate::Config;
 use crate::Error;
 
@@ -98,7 +99,7 @@ impl WireguardRelay {
             Message::HandshakeInitiation(message) => {
                 context.check_macs = true;
                 match context.verify(&mut buffer) {
-                    Ok(_) => self.on_handshake_initiation(message, from)?,
+                    Ok(_) => self.on_handshake_initiation(message, from, packet)?,
                     Err(_) => self.on_other_handshake_initiation(message, from, packet)?,
                 }
             }
@@ -114,6 +115,7 @@ impl WireguardRelay {
         &mut self,
         message: EncryptedHandshakeInitiation,
         from: SocketAddr,
+        packet: &[u8],
     ) -> Result<(), Error> {
         let (session, initiation, response_bytes) = Responder::respond(
             self.public_key,
@@ -129,18 +131,6 @@ impl WireguardRelay {
                 ));
             }
         }
-        self.socket_addr_to_public_key
-            .insert(from, initiation.static_public);
-        // sender and receiver are flipped here
-        self.session_to_destination
-            .insert((from, session.sender_index().as_u32()), self.public_key);
-        self.auth_peers.insert(
-            initiation.static_public,
-            AuthPeer {
-                session,
-                socket_addr: from,
-            },
-        );
         eprintln!(
             "{}->wgx auth-peer->wgx {:?}",
             from,
@@ -152,6 +142,30 @@ impl WireguardRelay {
             from,
             MessageKind::HandshakeResponse
         );
+        self.socket_addr_to_public_key
+            .insert(from, initiation.static_public);
+        // sender and receiver are flipped here
+        self.session_to_destination
+            .insert((from, session.sender_index().as_u32()), self.public_key);
+        use std::collections::hash_map::Entry;
+        let new_auth_peer = AuthPeer {
+            session,
+            socket_addr: from,
+            created_at: SystemTime::now(),
+            bytes_received: packet.len() as u64,
+            bytes_sent: response_bytes.len() as u64,
+        };
+        match self.auth_peers.entry(initiation.static_public) {
+            Entry::Vacant(v) => {
+                v.insert(new_auth_peer);
+            }
+            Entry::Occupied(mut o) => {
+                let mut new_auth_peer = new_auth_peer;
+                new_auth_peer.bytes_received = o.get().bytes_received;
+                new_auth_peer.bytes_sent = o.get().bytes_sent;
+                *o.get_mut() = new_auth_peer;
+            }
+        }
         Ok(())
     }
 
@@ -194,6 +208,13 @@ impl WireguardRelay {
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
+        let nbytes = packet.len() as u64;
+        if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
+            peer.bytes_received += nbytes;
+        }
+        if let Some(peer) = self.auth_peers.get_mut(to_public_key) {
+            peer.bytes_sent += nbytes;
+        }
         Ok(())
     }
 
@@ -239,6 +260,13 @@ impl WireguardRelay {
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
+        let nbytes = packet.len() as u64;
+        if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
+            peer.bytes_received += nbytes;
+        }
+        if let Some(peer) = self.auth_peers.get_mut(&to_public_key) {
+            peer.bytes_sent += nbytes;
+        }
         eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
         Ok(())
     }
@@ -301,7 +329,10 @@ impl WireguardRelay {
                     }
                 }
             }
-            eprintln!("received {:?}", data);
+            let nbytes = packet.len() as u64;
+            if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
+                peer.bytes_received += nbytes;
+            }
             eprintln!(
                 "{}->local {}->wgx {:?}({})",
                 from,
@@ -318,6 +349,13 @@ impl WireguardRelay {
                 })?
                 .socket_addr;
             self.socket.send_to(packet, to_socket_addr)?;
+            let nbytes = packet.len() as u64;
+            if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
+                peer.bytes_received += nbytes;
+            }
+            if let Some(peer) = self.auth_peers.get_mut(to_public_key) {
+                peer.bytes_sent += nbytes;
+            }
             eprintln!(
                 "{}->{} {}->{} {:?}({})",
                 from,
@@ -331,8 +369,11 @@ impl WireguardRelay {
         Ok(())
     }
 
-    pub(crate) fn status(&self) -> Status {
-        Status {
+    pub(crate) fn status(&self) -> Result<Status, Error> {
+        Ok(Status {
+            allowed_public_keys: self.allowed_public_keys.clone(),
+            public_key: self.public_key,
+            listen_port: self.socket.local_addr()?.port(),
             auth_peers: self
                 .auth_peers
                 .iter()
@@ -340,7 +381,7 @@ impl WireguardRelay {
                 .collect(),
             session_to_destination: self.session_to_destination.clone(),
             hub_to_spokes: self.hub_to_spokes.clone(),
-        }
+        })
     }
 
     pub(crate) fn export_config(&self, format: ExportFormat) -> Result<String, Error> {
@@ -411,14 +452,18 @@ impl WireguardRelay {
 struct AuthPeer {
     session: Session,
     socket_addr: SocketAddr,
+    created_at: SystemTime,
+    bytes_received: u64,
+    bytes_sent: u64,
 }
 
 impl From<&AuthPeer> for wgx::AuthPeer {
     fn from(other: &AuthPeer) -> Self {
         Self {
             socket_addr: other.socket_addr,
-            sender_index: other.session.sender_index().as_u32(),
-            receiver_index: other.session.receiver_index().as_u32(),
+            latest_handshake: other.created_at,
+            bytes_received: other.bytes_received,
+            bytes_sent: other.bytes_sent,
         }
     }
 }

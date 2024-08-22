@@ -8,6 +8,8 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
+use std::str::FromStr;
+use std::time::SystemTime;
 
 use bincode::config::Configuration;
 use bincode::decode_from_slice;
@@ -19,6 +21,10 @@ use bincode::Encode;
 use serde::Deserialize;
 use serde::Serialize;
 use wgproto::PublicKey;
+
+use crate::Base64Error;
+use crate::FromBase64;
+use crate::ToBase64;
 
 pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgxd-socket";
 pub const MAX_REQUEST_SIZE: usize = 4096;
@@ -45,6 +51,11 @@ pub enum UnixResponse {
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct Status {
     #[bincode(with_serde)]
+    pub public_key: PublicKey,
+    pub listen_port: u16,
+    #[bincode(with_serde)]
+    pub allowed_public_keys: AllowedPublicKeys,
+    #[bincode(with_serde)]
     pub auth_peers: HashMap<PublicKey, AuthPeer>,
     #[bincode(with_serde)]
     pub session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
@@ -56,8 +67,9 @@ pub struct Status {
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct AuthPeer {
     pub socket_addr: SocketAddr,
-    pub sender_index: u32,
-    pub receiver_index: u32,
+    pub latest_handshake: SystemTime,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
 }
 
 #[derive(Decode, Encode, Clone)]
@@ -121,6 +133,54 @@ impl Display for ExportFormat {
 impl Debug for ExportFormat {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub enum AllowedPublicKeys {
+    All,
+    Set(HashSet<PublicKey>),
+}
+
+impl Default for AllowedPublicKeys {
+    fn default() -> Self {
+        Self::Set(Default::default())
+    }
+}
+
+impl Display for AllowedPublicKeys {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            Self::All => write!(f, "all"),
+            Self::Set(public_keys) => {
+                let mut iter = public_keys.iter();
+                if let Some(public_key) = iter.next() {
+                    write!(f, "{}", public_key.to_base64())?;
+                }
+                for public_key in iter {
+                    write!(f, ", {}", public_key.to_base64())?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl FromStr for AllowedPublicKeys {
+    type Err = Base64Error;
+    fn from_str(other: &str) -> Result<Self, Self::Err> {
+        if other == "all" {
+            return Ok(Self::All);
+        }
+        let mut public_keys: HashSet<PublicKey> = HashSet::new();
+        for item in other.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            public_keys.insert(FromBase64::from_base64(item)?);
+        }
+        Ok(Self::Set(public_keys))
     }
 }
 
@@ -194,6 +254,8 @@ mod tests {
     use std::io::Cursor;
     use std::net::Ipv4Addr;
     use std::net::Ipv6Addr;
+    use std::time::Duration;
+    use std::time::UNIX_EPOCH;
 
     use arbitrary::Arbitrary;
     use arbitrary::Unstructured;
@@ -240,6 +302,9 @@ mod tests {
     impl<'a> Arbitrary<'a> for Status {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
+                allowed_public_keys: u.arbitrary()?,
+                listen_port: u.arbitrary()?,
+                public_key: u.arbitrary::<[u8; 32]>()?.into(),
                 auth_peers: u
                     .arbitrary::<HashMap<[u8; 32], AuthPeer>>()?
                     .into_iter()
@@ -263,8 +328,10 @@ mod tests {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
                 socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
-                sender_index: u.arbitrary()?,
-                receiver_index: u.arbitrary()?,
+                latest_handshake: UNIX_EPOCH
+                    + Duration::from_secs(u.int_in_range(0_u64..=(60_u64 * 60 * 24 * 365 * 200))?),
+                bytes_received: u.arbitrary()?,
+                bytes_sent: u.arbitrary()?,
             })
         }
     }
@@ -290,6 +357,39 @@ mod tests {
                 true => SocketAddr::new(Ipv4Addr::from(u.arbitrary::<[u8; 4]>()?).into(), port),
                 false => SocketAddr::new(Ipv6Addr::from(u.arbitrary::<[u8; 16]>()?).into(), port),
             }))
+        }
+    }
+
+    fn test_io_str<T: FromStr + ToString + PartialEq + Debug + for<'a> Arbitrary<'a>>()
+    where
+        <T as std::str::FromStr>::Err: Debug,
+    {
+        arbtest(|u| {
+            let expected: T = u.arbitrary()?;
+            let string = expected.to_string();
+            let actual = string.parse().unwrap();
+            assert_eq!(expected, actual);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn allowed_public_keys_io() {
+        test_io_str::<AllowedPublicKeys>();
+    }
+
+    impl<'a> Arbitrary<'a> for AllowedPublicKeys {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let i: usize = u.int_in_range(0..=1)?;
+            Ok(match i {
+                0 => AllowedPublicKeys::All,
+                _ => AllowedPublicKeys::Set(
+                    u.arbitrary::<HashSet<[u8; 32]>>()?
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                ),
+            })
         }
     }
 }

@@ -105,7 +105,7 @@ impl UnixServer {
             while let Some(request) = client.read_request()? {
                 let response = match request {
                     UnixRequest::Running => UnixResponse::Running,
-                    UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status())),
+                    UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status()?)),
                     UnixRequest::Export { format } => {
                         let response = wg_relay
                             .export_config(format)
