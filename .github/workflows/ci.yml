@@ -5,7 +5,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/igankevich/wgsr-ci:latest
+      image: ghcr.io/igankevich/wgx-ci:latest
       credentials:
         username: token
         password: ${{ secrets.GHCR_TOKEN }}
