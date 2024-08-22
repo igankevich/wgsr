@@ -195,7 +195,6 @@ mod tests {
     use arbitrary::Arbitrary;
     use arbitrary::Unstructured;
     use arbtest::arbtest;
-    use wgproto::PrivateKey;
 
     use super::*;
 
@@ -234,11 +233,6 @@ mod tests {
                 },
             })
         }
-    }
-
-    fn _arbitrary_public_key(u: &mut Unstructured<'_>) -> Result<PublicKey, arbitrary::Error> {
-        let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
-        Ok((&private_key).into())
     }
 
     impl<'a> Arbitrary<'a> for Peer {
