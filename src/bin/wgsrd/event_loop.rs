@@ -1,29 +1,14 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::create_dir_all;
-use std::fs::remove_file;
 use std::fs::rename;
-use std::io::BufRead;
-use std::io::BufReader;
-use std::io::BufWriter;
-use std::io::Write;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
-use std::os::fd::RawFd;
 use std::path::Path;
 use std::path::PathBuf;
 
-use bincode::error::DecodeError;
-use mio::event::Event;
 use mio::net::UdpSocket;
-use mio::net::UnixListener;
-use mio::net::UnixStream;
-use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token, Waker};
-use rand::Rng;
-use rand_core::OsRng;
 use static_assertions::const_assert;
 use wgproto::DecodeWithContext;
 use wgproto::EncodeWithContext;
@@ -47,43 +32,37 @@ use wgsr::RpcResponse;
 use wgsr::RpcResponseBody;
 use wgsr::Status;
 use wgsr::ToBase64;
-use wgsr::UnixEncodeDecode;
-use wgsr::UnixRequest;
-use wgsr::UnixRequestError;
-use wgsr::UnixResponse;
-use wgsr::MAX_REQUEST_SIZE;
-use wgsr::MAX_RESPONSE_SIZE;
 
 use crate::format_error;
 use crate::get_internet_addresses;
 use crate::AllowedPublicKeys;
 use crate::Config;
 use crate::Error;
+use crate::UnixServer;
 
 pub(crate) struct EventLoop {
     #[allow(dead_code)]
     config_file: PathBuf,
     poll: Poll,
     udp_server: UdpServer,
-    unix_server: UnixListener,
-    unix_clients: HashMap<usize, UnixClient>,
+    unix_server: UnixServer,
 }
 
 impl EventLoop {
     pub(crate) fn new(config: Config, config_file: PathBuf) -> Result<Self, Error> {
-        let poll = Poll::new()?;
+        let mut poll = Poll::new()?;
         let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port.into());
         let mut udp_socket = UdpSocket::bind(socket_addr)?;
         poll.registry()
             .register(&mut udp_socket, UDP_SERVER_TOKEN, Interest::READABLE)?;
-        // unix socket
-        if let Some(directory) = config.unix_socket_path.parent() {
-            create_dir_all(directory)?;
-        }
-        let _ = remove_file(config.unix_socket_path.as_path());
-        let mut unix_server = UnixListener::bind(config.unix_socket_path.as_path())?;
-        poll.registry()
-            .register(&mut unix_server, UNIX_SERVER_TOKEN, Interest::READABLE)?;
+        let unix_server = UnixServer::new(
+            config.unix_socket_path.as_path(),
+            MAX_UNIX_CLIENTS,
+            UNIX_TOKEN_MIN,
+            UNIX_TOKEN_MAX,
+            UNIX_SERVER_TOKEN,
+            &mut poll,
+        )?;
         Ok(Self {
             config_file,
             poll,
@@ -100,7 +79,6 @@ impl EventLoop {
                 session_to_destination: Default::default(),
             },
             unix_server,
-            unix_clients: Default::default(),
         })
     }
 
@@ -131,27 +109,14 @@ impl EventLoop {
                     }
                     UNIX_SERVER_TOKEN => {
                         if event.is_readable() {
-                            self.accept_unix_connections()
+                            self.unix_server.on_server_event(&mut self.poll)
                         } else {
                             Ok(())
                         }
                     }
-                    Token(i) if (UNIX_TOKEN_MIN..=UNIX_TOKEN_MAX).contains(&i) => {
-                        if event.is_error() {
-                            self.unix_clients.remove(&i);
-                            continue;
-                        }
-                        let client = match self.unix_clients.get_mut(&i) {
-                            Some(client) => client,
-                            None => continue,
-                        };
-                        Self::process_unix_client_event(
-                            event,
-                            client,
-                            &mut self.udp_server,
-                            &mut self.poll,
-                        )
-                    }
+                    Token(i) if (UNIX_TOKEN_MIN..=UNIX_TOKEN_MAX).contains(&i) => self
+                        .unix_server
+                        .on_client_event(event, &mut self.udp_server, &mut self.poll),
                     Token(i) => Err(format_error!("unknown event {}", i)),
                 };
                 if let Err(e) = ret {
@@ -406,93 +371,60 @@ impl EventLoop {
         }
         Ok(())
     }
+}
 
-    fn accept_unix_connections(&mut self) -> Result<(), Error> {
-        use std::collections::hash_map::Entry;
-        loop {
-            let (mut stream, _from) = match self.unix_server.accept() {
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // no more connections to accept
-                    break;
-                }
-                other => other,
-            }?;
-            if self.unix_clients.len() == MAX_UNIX_CLIENTS {
-                return Err(Error::other("max no. of unix clients reached"));
-            }
-            loop {
-                let i = OsRng.gen_range(UNIX_TOKEN_MIN..(UNIX_TOKEN_MAX + 1));
-                if let Entry::Vacant(v) = self.unix_clients.entry(i) {
-                    self.poll
-                        .registry()
-                        .register(&mut stream, Token(i), Interest::READABLE)?;
-                    v.insert(UnixClient::new(stream)?);
-                    break;
-                }
-            }
+fn _update_config<F>(config_file: &Path, f: F) -> Result<(), Error>
+where
+    F: FnOnce(&'_ mut Config) -> Result<(), Error>,
+{
+    let mut config = Config::open(config_file)?;
+    f(&mut config)?;
+    let tmp_config_file = get_tmp_file(config_file)?;
+    config.save(tmp_config_file.as_path())?;
+    rename(tmp_config_file.as_path(), config_file)?;
+    Ok(())
+}
+
+pub(crate) struct UdpServer {
+    socket: UdpSocket,
+    private_key: PrivateKey,
+    preshared_key: PresharedKey,
+    public_key: PublicKey,
+    auth_peers: HashMap<PublicKey, AuthPeer>,
+    hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
+    spoke_to_hub: HashMap<PublicKey, PublicKey>,
+    allowed_public_keys: AllowedPublicKeys,
+    socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
+    // (sender-socket-address, receiver-index) -> receiver-public-key
+    session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
+}
+
+impl UdpServer {
+    pub(crate) fn status(&self) -> Status {
+        Status {
+            auth_peers: self
+                .auth_peers
+                .iter()
+                .map(|(k, v)| (*k, v.into()))
+                .collect(),
+            // TODO
+            session_to_destination: Default::default(),
+            hub_to_spokes: Default::default(),
         }
-        Ok(())
     }
 
-    fn process_unix_client_event(
-        event: &Event,
-        client: &mut UnixClient,
-        udp_server: &mut UdpServer,
-        poll: &mut Poll,
-    ) -> Result<(), Error> {
-        let mut interest: Option<Interest> = None;
-        if event.is_readable() {
-            client.fill_buf()?;
-            while let Some(request) = client.read_request()? {
-                let response = match request {
-                    UnixRequest::Running => UnixResponse::Running,
-                    UnixRequest::Status => UnixResponse::Status(Ok(Status {
-                        auth_peers: udp_server
-                            .auth_peers
-                            .iter()
-                            .map(|(k, v)| (*k, v.into()))
-                            .collect(),
-                        session_to_destination: Default::default(),
-                        hub_to_spokes: Default::default(),
-                    })),
-                    UnixRequest::Export { format } => {
-                        let response =
-                            Self::export_config(format, udp_server).map_err(UnixRequestError::map);
-                        UnixResponse::Export(response)
-                    }
-                };
-                client.send_response(&response)?;
-            }
-            if !client.flush()? {
-                interest = Some(Interest::READABLE | Interest::WRITABLE);
-            }
-        }
-        if event.is_writable() && client.flush()? {
-            interest = Some(Interest::READABLE);
-        }
-        if let Some(interest) = interest {
-            poll.registry()
-                .reregister(&mut SourceFd(&client.fd), UNIX_SERVER_TOKEN, interest)?;
-        }
-        Ok(())
-    }
-
-    fn export_config(format: ExportFormat, udp_server: &mut UdpServer) -> Result<String, Error> {
+    pub(crate) fn export_config(&self, format: ExportFormat) -> Result<String, Error> {
         use std::fmt::Write;
         match format {
             ExportFormat::Config => {
                 let mut buf = String::with_capacity(4096);
                 writeln!(&mut buf, "# wgsr authentication peer")?;
                 writeln!(&mut buf, "[Peer]")?;
-                writeln!(
-                    &mut buf,
-                    "PublicKey = {}",
-                    udp_server.public_key.to_base64()
-                )?;
+                writeln!(&mut buf, "PublicKey = {}", self.public_key.to_base64())?;
                 let mut internet_addresses = get_internet_addresses()?;
                 internet_addresses.sort();
                 let mut iter = internet_addresses.into_iter();
-                let port = udp_server.socket.local_addr()?.port();
+                let port = self.socket.local_addr()?.port();
                 match iter.next() {
                     Some(addr) => match addr {
                         IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
@@ -514,35 +446,9 @@ impl EventLoop {
                 writeln!(&mut buf, "AllowedIPs =")?;
                 Ok(buf)
             }
-            ExportFormat::PublicKey => Ok(udp_server.public_key.to_base64()),
+            ExportFormat::PublicKey => Ok(self.public_key.to_base64()),
         }
     }
-}
-
-fn _update_config<F>(config_file: &Path, f: F) -> Result<(), Error>
-where
-    F: FnOnce(&'_ mut Config) -> Result<(), Error>,
-{
-    let mut config = Config::open(config_file)?;
-    f(&mut config)?;
-    let tmp_config_file = get_tmp_file(config_file)?;
-    config.save(tmp_config_file.as_path())?;
-    rename(tmp_config_file.as_path(), config_file)?;
-    Ok(())
-}
-
-struct UdpServer {
-    socket: UdpSocket,
-    private_key: PrivateKey,
-    preshared_key: PresharedKey,
-    public_key: PublicKey,
-    auth_peers: HashMap<PublicKey, AuthPeer>,
-    hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
-    spoke_to_hub: HashMap<PublicKey, PublicKey>,
-    allowed_public_keys: AllowedPublicKeys,
-    socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
-    // (sender-socket-address, receiver-index) -> receiver-public-key
-    session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
 }
 
 struct AuthPeer {
@@ -557,49 +463,6 @@ impl From<&AuthPeer> for wgsr::AuthPeer {
             sender_index: other.session.sender_index().as_u32(),
             receiver_index: other.session.receiver_index().as_u32(),
         }
-    }
-}
-
-struct UnixClient {
-    fd: RawFd,
-    reader: BufReader<UnixStream>,
-    writer: BufWriter<UnixStream>,
-}
-
-impl UnixClient {
-    fn new(stream: UnixStream) -> Result<Self, Error> {
-        let stream: std::os::unix::net::UnixStream = stream.into();
-        let fd = stream.as_raw_fd();
-        let input_stream = UnixStream::from_std(stream.try_clone()?);
-        let output_stream = UnixStream::from_std(stream);
-        Ok(Self {
-            fd,
-            reader: BufReader::with_capacity(MAX_REQUEST_SIZE, input_stream),
-            writer: BufWriter::with_capacity(MAX_RESPONSE_SIZE, output_stream),
-        })
-    }
-
-    fn fill_buf(&mut self) -> Result<(), Error> {
-        self.reader.fill_buf()?;
-        Ok(())
-    }
-
-    fn read_request(&mut self) -> Result<Option<UnixRequest>, Error> {
-        match UnixRequest::decode(&mut self.reader) {
-            Ok(request) => Ok(Some(request)),
-            Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn send_response(&mut self, response: &UnixResponse) -> Result<(), Error> {
-        response.encode(&mut self.writer)?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<bool, Error> {
-        self.writer.flush()?;
-        Ok(self.writer.buffer().is_empty())
     }
 }
 

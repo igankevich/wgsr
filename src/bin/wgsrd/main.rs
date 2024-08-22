@@ -6,6 +6,7 @@ use self::config_parser::*;
 use self::error::*;
 use self::event_loop::*;
 use self::network_interface::*;
+use self::unix::*;
 use crate::Config;
 use crate::Error;
 use crate::DEFAULT_CONFIGURATION_FILE_PATH;
@@ -15,6 +16,7 @@ mod config_parser;
 mod error;
 mod event_loop;
 mod network_interface;
+mod unix;
 
 fn usage() -> &'static str {
     "usage:\n  wgsrd [config-file]\n  wgsrd --version\n  wgsrd --help"
