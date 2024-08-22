@@ -72,6 +72,12 @@ impl From<wgsr::Base64Error> for Error {
     }
 }
 
+impl From<wgsr::RpcError> for Error {
+    fn from(_other: wgsr::RpcError) -> Self {
+        Self::other("rpc error")
+    }
+}
+
 #[macro_export]
 macro_rules! format_error {
     ($($args:expr),*) => {

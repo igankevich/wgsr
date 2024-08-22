@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -6,7 +8,6 @@ use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::num::NonZeroU16;
 
 use bincode::config::Configuration;
 use bincode::decode_from_slice;
@@ -15,6 +16,8 @@ use bincode::error::DecodeError;
 use bincode::error::EncodeError;
 use bincode::Decode;
 use bincode::Encode;
+use serde::Deserialize;
+use serde::Serialize;
 use wgproto::PublicKey;
 
 pub const DEFAULT_UNIX_SOCKET_PATH: &str = "/tmp/.wgsrd-socket";
@@ -24,86 +27,38 @@ const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
-pub enum Request {
+pub enum UnixRequest {
     Running,
     Status,
-    RelayAdd {
-        listen_port: Option<NonZeroU16>,
-        persistent: bool,
-    },
-    RelayRemove {
-        listen_port: NonZeroU16,
-        persistent: bool,
-    },
-    HubAdd {
-        listen_port: NonZeroU16,
-        #[bincode(with_serde)]
-        public_key: PublicKey,
-        persistent: bool,
-    },
-    HubRemove {
-        listen_port: NonZeroU16,
-        #[bincode(with_serde)]
-        public_key: PublicKey,
-        persistent: bool,
-    },
-    SpokeAdd {
-        listen_port: NonZeroU16,
-        #[bincode(with_serde)]
-        public_key: PublicKey,
-        persistent: bool,
-    },
-    SpokeRemove {
-        listen_port: NonZeroU16,
-        #[bincode(with_serde)]
-        public_key: PublicKey,
-        persistent: bool,
-    },
-    Export {
-        listen_port: NonZeroU16,
-        format: ExportFormat,
-    },
+    Export { format: ExportFormat },
 }
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
-pub enum Response {
-    Running(Result<(), RequestError>),
-    Status(Result<Status, RequestError>),
-    RelayAdd(Result<NonZeroU16, RequestError>),
-    RelayRemove(Result<(), RequestError>),
-    HubAdd(Result<(), RequestError>),
-    HubRemove(Result<(), RequestError>),
-    SpokeAdd(Result<(), RequestError>),
-    SpokeRemove(Result<(), RequestError>),
-    Export(Result<String, RequestError>),
+pub enum UnixResponse {
+    Running,
+    Status(Result<Status, UnixRequestError>),
+    Export(Result<String, UnixRequestError>),
 }
 
 #[derive(Decode, Encode)]
-#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct Status {
-    pub servers: Vec<Server>,
-}
-
-#[derive(Decode, Encode)]
-#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
-pub struct Server {
-    pub socket_addr: SocketAddr,
-    pub hub: Option<Hub>,
-    pub spokes: Vec<Spoke>,
-    pub peers: Vec<Peer>,
-}
-
-#[derive(Decode, Encode)]
-#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
-pub struct Hub {
-    pub socket_addr: SocketAddr,
     #[bincode(with_serde)]
-    pub public_key: PublicKey,
-    pub session_index: u32,
+    pub auth_peers: HashMap<PublicKey, AuthPeer>,
+    #[bincode(with_serde)]
+    pub session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
+    #[bincode(with_serde)]
+    pub hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
 }
 
-pub type Spoke = Hub;
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+pub struct AuthPeer {
+    pub socket_addr: SocketAddr,
+    pub sender_index: u32,
+    pub receiver_index: u32,
+}
 
 #[derive(Decode, Encode, Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
@@ -111,7 +66,6 @@ pub struct Peer {
     pub socket_addr: SocketAddr,
     pub session_index: u32,
     pub status: PeerStatus,
-    pub kind: PeerKind,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
@@ -144,38 +98,9 @@ impl Debug for PeerStatus {
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary))]
-pub enum PeerKind {
-    Hub,
-    Spoke,
-}
-
-impl PeerKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Hub => "hub",
-            Self::Spoke => "spoke",
-        }
-    }
-}
-
-impl Display for PeerKind {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl Debug for PeerKind {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Hash, Decode, Encode)]
-#[cfg_attr(test, derive(arbitrary::Arbitrary))]
 pub enum ExportFormat {
     Config,
     PublicKey,
-    PresharedKey,
 }
 
 impl ExportFormat {
@@ -183,7 +108,6 @@ impl ExportFormat {
         match self {
             Self::Config => "config",
             Self::PublicKey => "public-key",
-            Self::PresharedKey => "preshared-key",
         }
     }
 }
@@ -202,29 +126,29 @@ impl Debug for ExportFormat {
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq))]
-pub struct RequestError(pub String);
+pub struct UnixRequestError(pub String);
 
-impl RequestError {
+impl UnixRequestError {
     pub fn map(other: impl ToString) -> Self {
         Self(other.to_string())
     }
 }
 
-impl Display for RequestError {
+impl Display for UnixRequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl Debug for RequestError {
+impl Debug for UnixRequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
     }
 }
 
-impl std::error::Error for RequestError {}
+impl std::error::Error for UnixRequestError {}
 
-pub trait EncodeDecode {
+pub trait UnixEncodeDecode {
     fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError>;
     fn decode<R>(reader: &mut BufReader<R>) -> Result<Self, DecodeError>
     where
@@ -233,7 +157,7 @@ pub trait EncodeDecode {
         R: Read;
 }
 
-impl<T: Encode + Decode> EncodeDecode for T {
+impl<T: Encode + Decode> UnixEncodeDecode for T {
     fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError> {
         encode_into_std_write(self, writer, bincode_config())?;
         Ok(())
@@ -274,97 +198,73 @@ mod tests {
     use arbitrary::Arbitrary;
     use arbitrary::Unstructured;
     use arbtest::arbtest;
-    use wgproto::PrivateKey;
 
     use super::*;
 
     #[test]
     fn response_io() {
-        test_io::<Response>();
+        test_io::<UnixResponse>();
     }
 
     #[test]
     fn request_io() {
-        test_io::<Request>();
+        test_io::<UnixRequest>();
     }
 
-    fn test_io<T: EncodeDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
+    fn test_io<T: UnixEncodeDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
         arbtest(|u| {
             let expected: T = u.arbitrary()?;
             let mut buffer = Vec::with_capacity(4096);
-            EncodeDecode::encode(&expected, &mut buffer).unwrap();
+            UnixEncodeDecode::encode(&expected, &mut buffer).unwrap();
             let mut reader = BufReader::new(Cursor::new(buffer));
             reader.fill_buf().unwrap();
-            let actual = EncodeDecode::decode(&mut reader).unwrap();
+            let actual = UnixEncodeDecode::decode(&mut reader).unwrap();
             assert_eq!(expected, actual);
             Ok(())
         });
     }
 
-    impl<'a> Arbitrary<'a> for Request {
+    impl<'a> Arbitrary<'a> for UnixRequest {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
-            let i: usize = u.int_in_range(0..=8)?;
+            let i: usize = u.int_in_range(0..=2)?;
             Ok(match i {
-                0 => Request::Running,
-                1 => Request::Status,
-                2 => Request::RelayAdd {
-                    listen_port: u.arbitrary()?,
-                    persistent: u.arbitrary()?,
-                },
-                3 => Request::RelayRemove {
-                    listen_port: u.arbitrary()?,
-                    persistent: u.arbitrary()?,
-                },
-                4 => Request::HubAdd {
-                    listen_port: u.arbitrary()?,
-                    public_key: arbitrary_public_key(u)?,
-                    persistent: u.arbitrary()?,
-                },
-                5 => Request::HubRemove {
-                    listen_port: u.arbitrary()?,
-                    public_key: arbitrary_public_key(u)?,
-                    persistent: u.arbitrary()?,
-                },
-                6 => Request::SpokeAdd {
-                    listen_port: u.arbitrary()?,
-                    public_key: arbitrary_public_key(u)?,
-                    persistent: u.arbitrary()?,
-                },
-                7 => Request::SpokeRemove {
-                    listen_port: u.arbitrary()?,
-                    public_key: arbitrary_public_key(u)?,
-                    persistent: u.arbitrary()?,
-                },
-                _ => Request::Export {
-                    listen_port: u.arbitrary()?,
+                0 => UnixRequest::Running,
+                1 => UnixRequest::Status,
+                _ => UnixRequest::Export {
                     format: u.arbitrary()?,
                 },
             })
         }
     }
 
-    fn arbitrary_public_key(u: &mut Unstructured<'_>) -> Result<PublicKey, arbitrary::Error> {
-        let private_key: PrivateKey = u.arbitrary::<[u8; 32]>()?.into();
-        Ok((&private_key).into())
-    }
-
-    impl<'a> Arbitrary<'a> for Server {
+    impl<'a> Arbitrary<'a> for Status {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
-                socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
-                hub: u.arbitrary()?,
-                spokes: u.arbitrary()?,
-                peers: u.arbitrary()?,
+                auth_peers: u
+                    .arbitrary::<HashMap<[u8; 32], AuthPeer>>()?
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v))
+                    .collect(),
+                session_to_destination: u
+                    .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
+                    .into_iter()
+                    .map(|((k0, k1), v)| ((k0.0, k1), v.into()))
+                    .collect(),
+                hub_to_spokes: u
+                    .arbitrary::<HashMap<[u8; 32], HashSet<[u8; 32]>>>()?
+                    .into_iter()
+                    .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))
+                    .collect(),
             })
         }
     }
 
-    impl<'a> Arbitrary<'a> for Hub {
+    impl<'a> Arbitrary<'a> for AuthPeer {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
                 socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
-                public_key: arbitrary_public_key(u)?,
-                session_index: u.arbitrary()?,
+                sender_index: u.arbitrary()?,
+                receiver_index: u.arbitrary()?,
             })
         }
     }
@@ -375,11 +275,11 @@ mod tests {
                 socket_addr: u.arbitrary::<ArbitrarySocketAddr>()?.0,
                 session_index: u.arbitrary()?,
                 status: u.arbitrary()?,
-                kind: u.arbitrary()?,
             })
         }
     }
 
+    #[derive(PartialEq, Eq, Hash)]
     struct ArbitrarySocketAddr(SocketAddr);
 
     impl<'a> Arbitrary<'a> for ArbitrarySocketAddr {

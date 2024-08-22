@@ -1,5 +1,7 @@
 mod base64;
-mod proto;
+mod rpc;
+mod unix;
 
 pub use self::base64::*;
-pub use self::proto::*;
+pub use self::rpc::*;
+pub use self::unix::*;
