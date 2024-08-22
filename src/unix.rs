@@ -27,7 +27,7 @@ const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
-pub enum Request {
+pub enum UnixRequest {
     Running,
     Status,
     Export { format: ExportFormat },
@@ -35,10 +35,10 @@ pub enum Request {
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
-pub enum Response {
+pub enum UnixResponse {
     Running,
-    Status(Result<Status, RequestError>),
-    Export(Result<String, RequestError>),
+    Status(Result<Status, UnixRequestError>),
+    Export(Result<String, UnixRequestError>),
 }
 
 #[derive(Decode, Encode)]
@@ -126,27 +126,27 @@ impl Debug for ExportFormat {
 
 #[derive(Decode, Encode)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq))]
-pub struct RequestError(pub String);
+pub struct UnixRequestError(pub String);
 
-impl RequestError {
+impl UnixRequestError {
     pub fn map(other: impl ToString) -> Self {
         Self(other.to_string())
     }
 }
 
-impl Display for RequestError {
+impl Display for UnixRequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl Debug for RequestError {
+impl Debug for UnixRequestError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         Display::fmt(self, f)
     }
 }
 
-impl std::error::Error for RequestError {}
+impl std::error::Error for UnixRequestError {}
 
 pub trait EncodeDecode {
     fn encode(&self, writer: &mut impl Write) -> Result<(), EncodeError>;
@@ -203,12 +203,12 @@ mod tests {
 
     #[test]
     fn response_io() {
-        test_io::<Response>();
+        test_io::<UnixResponse>();
     }
 
     #[test]
     fn request_io() {
-        test_io::<Request>();
+        test_io::<UnixRequest>();
     }
 
     fn test_io<T: EncodeDecode + for<'a> Arbitrary<'a> + PartialEq + Eq + Debug>() {
@@ -224,13 +224,13 @@ mod tests {
         });
     }
 
-    impl<'a> Arbitrary<'a> for Request {
+    impl<'a> Arbitrary<'a> for UnixRequest {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             let i: usize = u.int_in_range(0..=2)?;
             Ok(match i {
-                0 => Request::Running,
-                1 => Request::Status,
-                _ => Request::Export {
+                0 => UnixRequest::Running,
+                1 => UnixRequest::Status,
+                _ => UnixRequest::Export {
                     format: u.arbitrary()?,
                 },
             })

@@ -40,15 +40,15 @@ use wgproto::Responder;
 use wgproto::Session;
 use wgsr::EncodeDecode;
 use wgsr::ExportFormat;
-use wgsr::Request;
-use wgsr::RequestError;
-use wgsr::Response;
 use wgsr::RpcRequest;
 use wgsr::RpcRequestBody;
 use wgsr::RpcResponse;
 use wgsr::RpcResponseBody;
 use wgsr::Status;
 use wgsr::ToBase64;
+use wgsr::UnixRequest;
+use wgsr::UnixRequestError;
+use wgsr::UnixResponse;
 use wgsr::MAX_REQUEST_SIZE;
 use wgsr::MAX_RESPONSE_SIZE;
 
@@ -443,8 +443,8 @@ impl EventLoop {
             client.fill_buf()?;
             while let Some(request) = client.read_request()? {
                 let response = match request {
-                    Request::Running => Response::Running,
-                    Request::Status => Response::Status(Ok(Status {
+                    UnixRequest::Running => UnixResponse::Running,
+                    UnixRequest::Status => UnixResponse::Status(Ok(Status {
                         auth_peers: udp_server
                             .auth_peers
                             .iter()
@@ -453,10 +453,10 @@ impl EventLoop {
                         session_to_destination: Default::default(),
                         hub_to_spokes: Default::default(),
                     })),
-                    Request::Export { format } => {
+                    UnixRequest::Export { format } => {
                         let response =
-                            Self::export_config(format, udp_server).map_err(RequestError::map);
-                        Response::Export(response)
+                            Self::export_config(format, udp_server).map_err(UnixRequestError::map);
+                        UnixResponse::Export(response)
                     }
                 };
                 client.send_response(&response)?;
@@ -582,15 +582,15 @@ impl UnixClient {
         Ok(())
     }
 
-    fn read_request(&mut self) -> Result<Option<Request>, Error> {
-        match Request::decode(&mut self.reader) {
+    fn read_request(&mut self) -> Result<Option<UnixRequest>, Error> {
+        match UnixRequest::decode(&mut self.reader) {
             Ok(request) => Ok(Some(request)),
             Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn send_response(&mut self, response: &Response) -> Result<(), Error> {
+    fn send_response(&mut self, response: &UnixResponse) -> Result<(), Error> {
         response.encode(&mut self.writer)?;
         Ok(())
     }

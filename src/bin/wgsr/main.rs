@@ -7,10 +7,10 @@ use clap::Subcommand;
 use wgproto::PublicKey;
 use wgsr::ExportFormat;
 use wgsr::FromBase64;
-use wgsr::Request;
-use wgsr::Response;
 use wgsr::Status;
 use wgsr::ToBase64;
+use wgsr::UnixRequest;
+use wgsr::UnixResponse;
 use wgsr::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
@@ -138,15 +138,15 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     match args.command {
         Some(Command::Running) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
-            match client.call(Request::Running)? {
-                Response::Running => Ok(ExitCode::SUCCESS),
+            match client.call(UnixRequest::Running)? {
+                UnixResponse::Running => Ok(ExitCode::SUCCESS),
                 _ => Ok(ExitCode::FAILURE),
             }
         }
         Some(Command::Status) | None => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
-            let status = match client.call(Request::Status)? {
-                Response::Status(status) => status?,
+            let status = match client.call(UnixRequest::Status)? {
+                UnixResponse::Status(status) => status?,
                 _ => return Ok(ExitCode::FAILURE),
             };
             print_status(&status);
@@ -154,8 +154,8 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         Some(Command::Export { format }) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
-            let config = match client.call(Request::Export { format })? {
-                Response::Export(result) => result?,
+            let config = match client.call(UnixRequest::Export { format })? {
+                UnixResponse::Export(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
             print!("{}", config);

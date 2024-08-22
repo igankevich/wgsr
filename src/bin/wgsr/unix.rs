@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use wgsr::EncodeDecode;
-use wgsr::Request;
-use wgsr::Response;
+use wgsr::UnixRequest;
+use wgsr::UnixResponse;
 use wgsr::MAX_REQUEST_SIZE;
 use wgsr::MAX_RESPONSE_SIZE;
 
@@ -32,11 +32,11 @@ impl UnixClient {
         })
     }
 
-    pub(crate) fn call(&mut self, request: Request) -> Result<Response, Error> {
+    pub(crate) fn call(&mut self, request: UnixRequest) -> Result<UnixResponse, Error> {
         request.encode(&mut self.writer)?;
         self.writer.flush()?;
         self.reader.fill_buf()?;
-        let response = Response::decode(&mut self.reader)?;
+        let response = UnixResponse::decode(&mut self.reader)?;
         Ok(response)
     }
 }
