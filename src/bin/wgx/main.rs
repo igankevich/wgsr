@@ -6,7 +6,6 @@ use std::time::SystemTime;
 
 use clap::Parser;
 use clap::Subcommand;
-use human_bytes::human_bytes;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::Status;
@@ -16,9 +15,12 @@ use wgx::UnixResponse;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
+use self::units::*;
 use self::unix::*;
+use crate::format_bytes;
 
 mod error;
+mod units;
 mod unix;
 
 #[derive(Parser)]
@@ -205,8 +207,8 @@ fn print_status(status: &Status) {
     }
 }
 
-fn format_latest_handshake(instant: SystemTime, default: &str, now: SystemTime) -> String {
-    match instant.duration_since(now) {
+fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: SystemTime) -> String {
+    match now.duration_since(latest_handshake) {
         Ok(d) => format!("{} ago", format_duration(d)),
         Err(_) => default.to_string(),
     }
@@ -227,8 +229,8 @@ fn format_duration(duration: Duration) -> String {
 fn format_transfer(received: u64, sent: u64) -> String {
     format!(
         "{} received, {} sent",
-        human_bytes(received as f64),
-        human_bytes(sent as f64)
+        format_bytes(received),
+        format_bytes(sent)
     )
 }
 
