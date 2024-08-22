@@ -50,8 +50,8 @@ fn do_main(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         libc::umask(0o077);
     }
-    let config = Config::open(config_file)?;
-    let event_loop = Dispatcher::new(config, config_file.to_path_buf())?;
+    let config = Config::load(config_file)?;
+    let event_loop = Dispatcher::new(config)?;
     let waker = event_loop.waker()?;
     ctrlc::set_handler(move || {
         let _ = waker.wake();

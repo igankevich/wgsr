@@ -29,19 +29,13 @@ use crate::WireguardRelay;
 
 pub(crate) struct UnixServer {
     listener: UnixListener,
-    max_clients: usize,
     server_token: Token,
-    token_min: usize,
-    token_max: usize,
     clients: HashMap<Token, UnixClient>,
 }
 
 impl UnixServer {
     pub(crate) fn new(
         unix_socket_path: &Path,
-        max_clients: usize,
-        token_min: usize,
-        token_max: usize,
         server_token: Token,
         poll: &mut Poll,
     ) -> Result<Self, Error> {
@@ -54,16 +48,19 @@ impl UnixServer {
             .register(&mut listener, server_token, Interest::READABLE)?;
         Ok(Self {
             listener,
-            max_clients,
             server_token,
-            token_min,
-            token_max,
             clients: Default::default(),
         })
     }
 
-    pub(crate) fn on_server_event(&mut self, poll: &mut Poll) -> Result<(), Error> {
+    pub(crate) fn on_server_event(
+        &mut self,
+        token_min: usize,
+        token_max: usize,
+        poll: &mut Poll,
+    ) -> Result<(), Error> {
         use std::collections::hash_map::Entry;
+        let max_clients = token_max - token_min + 1;
         loop {
             let (mut stream, _from) = match self.listener.accept() {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -72,11 +69,11 @@ impl UnixServer {
                 }
                 other => other,
             }?;
-            if self.clients.len() == self.max_clients {
+            if self.clients.len() == max_clients {
                 return Err(Error::other("max no. of unix clients reached"));
             }
             loop {
-                let i = OsRng.gen_range(self.token_min..(self.token_max + 1));
+                let i = OsRng.gen_range(token_min..(token_max + 1));
                 if let Entry::Vacant(v) = self.clients.entry(Token(i)) {
                     poll.registry()
                         .register(&mut stream, Token(i), Interest::READABLE)?;

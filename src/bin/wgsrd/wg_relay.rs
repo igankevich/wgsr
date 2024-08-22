@@ -293,9 +293,8 @@ impl WireguardRelay {
                 .iter()
                 .map(|(k, v)| (*k, v.into()))
                 .collect(),
-            // TODO
-            session_to_destination: Default::default(),
-            hub_to_spokes: Default::default(),
+            session_to_destination: self.session_to_destination.clone(),
+            hub_to_spokes: self.hub_to_spokes.clone(),
         }
     }
 

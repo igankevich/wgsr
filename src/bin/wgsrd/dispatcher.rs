@@ -1,6 +1,3 @@
-use std::path::Path;
-use std::path::PathBuf;
-
 use mio::Events;
 use mio::Poll;
 use mio::Token;
@@ -14,27 +11,21 @@ use crate::UnixServer;
 use crate::WireguardRelay;
 
 pub(crate) struct Dispatcher {
-    #[allow(dead_code)]
-    config_file: PathBuf,
     poll: Poll,
     wg_relay: WireguardRelay,
     unix_server: UnixServer,
 }
 
 impl Dispatcher {
-    pub(crate) fn new(config: Config, config_file: PathBuf) -> Result<Self, Error> {
+    pub(crate) fn new(config: Config) -> Result<Self, Error> {
         let mut poll = Poll::new()?;
         let unix_server = UnixServer::new(
             config.unix_socket_path.as_path(),
-            MAX_UNIX_CLIENTS,
-            UNIX_TOKEN_MIN,
-            UNIX_TOKEN_MAX,
             UNIX_SERVER_TOKEN,
             &mut poll,
         )?;
         let wg_relay = WireguardRelay::new(config, UDP_SERVER_TOKEN, &mut poll)?;
         Ok(Self {
-            config_file,
             poll,
             wg_relay,
             unix_server,
@@ -67,7 +58,11 @@ impl Dispatcher {
                     }
                     UNIX_SERVER_TOKEN => {
                         if event.is_readable() {
-                            self.unix_server.on_server_event(&mut self.poll)
+                            self.unix_server.on_server_event(
+                                UNIX_TOKEN_MIN,
+                                UNIX_TOKEN_MAX,
+                                &mut self.poll,
+                            )
                         } else {
                             Ok(())
                         }
@@ -83,18 +78,6 @@ impl Dispatcher {
             }
         }
     }
-}
-
-#[allow(dead_code)]
-fn get_tmp_file(path: &Path) -> Result<PathBuf, Error> {
-    let filename = path
-        .file_name()
-        .ok_or_else(|| format_error!("invalid file path: `{}`", path.display()))?;
-    let filename = format!(".{}.tmp", Path::new(filename).display());
-    Ok(match path.parent() {
-        Some(parent) => parent.join(filename),
-        None => filename.into(),
-    })
 }
 
 const MAX_EVENTS: usize = 1024;

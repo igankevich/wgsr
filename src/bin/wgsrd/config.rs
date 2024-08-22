@@ -29,7 +29,7 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub(crate) fn open(path: &Path) -> Result<Self, Error> {
+    pub(crate) fn load(path: &Path) -> Result<Self, Error> {
         match Self::do_open(path) {
             Ok(config) => Ok(config),
             Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -198,12 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn io() {
+    fn save_load() {
         arbtest(|u| {
             let expected: Config = u.arbitrary()?;
             let file = NamedTempFile::new().unwrap();
             expected.save(file.path()).unwrap();
-            let actual = Config::open(file.path()).unwrap();
+            let actual = Config::load(file.path()).unwrap();
             assert_eq!(expected, actual);
             Ok(())
         });
