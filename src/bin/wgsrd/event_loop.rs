@@ -95,9 +95,7 @@ impl EventLoop {
                 spoke_to_hub: Default::default(),
                 allowed_public_keys: config.allowed_public_keys,
                 socket_addr_to_public_key: Default::default(),
-                session_id_to_public_key: Default::default(),
-                source_to_public_key: Default::default(),
-                destination_to_public_key: Default::default(),
+                session_to_destination: Default::default(),
             },
             unix_server,
             unix_clients: Default::default(),
@@ -177,7 +175,7 @@ impl EventLoop {
             }
         }
         for ((sender_socket_addr, receiver_index), receiver_public_key) in
-            self.udp_server.destination_to_public_key.iter()
+            self.udp_server.session_to_destination.iter()
         {
             eprintln!(
                 "route {} {} -> {}",
@@ -220,15 +218,9 @@ impl EventLoop {
                         server
                             .socket_addr_to_public_key
                             .insert(from, initiation.static_public);
-                        eprintln!("insert {} {}", from, session.sender_index());
-                        // sender and receiver are flipped here
-                        server.source_to_public_key.insert(
-                            (from, session.receiver_index().as_u32()),
-                            initiation.static_public,
-                        );
                         // sender and receiver are flipped here
                         server
-                            .destination_to_public_key
+                            .session_to_destination
                             .insert((from, session.sender_index().as_u32()), server.public_key);
                         server.auth_peers.insert(
                             initiation.static_public,
@@ -274,12 +266,8 @@ impl EventLoop {
                             .socket_addr;
                         eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
                         server.socket.send_to(packet, to_socket_addr)?;
-                        server.session_id_to_public_key.insert(
-                            (to_socket_addr, message.sender_index.as_u32()),
-                            *from_public_key,
-                        );
                         // sender and receiver are flipped here
-                        server.destination_to_public_key.insert(
+                        server.session_to_destination.insert(
                             (to_socket_addr, message.sender_index.as_u32()),
                             *from_public_key,
                         );
@@ -298,7 +286,7 @@ impl EventLoop {
                     ));
                 }
                 let to_public_key = *server
-                    .session_id_to_public_key
+                    .session_to_destination
                     .get(&(from, message.receiver_index.as_u32()))
                     .ok_or_else(|| {
                         format_error!(
@@ -316,14 +304,10 @@ impl EventLoop {
                     })?
                     .socket_addr;
                 server.socket.send_to(packet, to_socket_addr)?;
-                server.session_id_to_public_key.insert(
-                    (to_socket_addr, message.sender_index.as_u32()),
-                    *from_public_key,
-                );
                 server
-                    .destination_to_public_key
+                    .session_to_destination
                     .insert((from, message.receiver_index.as_u32()), to_public_key);
-                server.destination_to_public_key.insert(
+                server.session_to_destination.insert(
                     (to_socket_addr, message.sender_index.as_u32()),
                     *from_public_key,
                 );
@@ -340,7 +324,7 @@ impl EventLoop {
                     ("spoke", "hub")
                 };
                 let to_public_key = server
-                    .destination_to_public_key
+                    .session_to_destination
                     .get(&(from, message.receiver_index.as_u32()))
                     .ok_or_else(|| {
                         format_error!(
@@ -466,7 +450,7 @@ impl EventLoop {
                             .iter()
                             .map(|(k, v)| (*k, v.into()))
                             .collect(),
-                        destination_to_public_key: Default::default(),
+                        session_to_destination: Default::default(),
                         hub_to_spokes: Default::default(),
                     })),
                     Request::Export { format } => {
@@ -555,13 +539,8 @@ struct UdpServer {
     spoke_to_hub: HashMap<PublicKey, PublicKey>,
     allowed_public_keys: AllowedPublicKeys,
     socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
-    // (sender-socket-address, sender-index) -> sender-public-key
-    source_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
     // (sender-socket-address, receiver-index) -> receiver-public-key
-    destination_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
-    // (to-socket-address, sender-index) -> from-public-key
-    // (from-socket-address, receiver-index) -> to-public-key
-    session_id_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
+    session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
 }
 
 struct AuthPeer {

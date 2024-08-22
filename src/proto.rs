@@ -47,7 +47,7 @@ pub struct Status {
     #[bincode(with_serde)]
     pub auth_peers: HashMap<PublicKey, AuthPeer>,
     #[bincode(with_serde)]
-    pub destination_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
+    pub session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
     #[bincode(with_serde)]
     pub hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
 }
@@ -245,7 +245,7 @@ mod tests {
                     .into_iter()
                     .map(|(k, v)| (k.into(), v))
                     .collect(),
-                destination_to_public_key: u
+                session_to_destination: u
                     .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
                     .into_iter()
                     .map(|((k0, k1), v)| ((k0.0, k1), v.into()))

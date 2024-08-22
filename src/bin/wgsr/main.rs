@@ -180,7 +180,7 @@ fn print_status(status: &Status) {
         }
     }
     for ((sender_socket_addr, receiver_index), receiver_public_key) in
-        status.destination_to_public_key.iter()
+        status.session_to_destination.iter()
     {
         eprintln!(
             "route {} {} -> {}",
