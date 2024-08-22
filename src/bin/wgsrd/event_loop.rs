@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::create_dir_all;
 use std::fs::remove_file;
 use std::fs::rename;
@@ -9,7 +10,6 @@ use std::io::Write;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::num::NonZeroU16;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
 use std::path::Path;
@@ -26,7 +26,9 @@ use rand::Rng;
 use rand_core::OsRng;
 use static_assertions::const_assert;
 use wgproto::DecodeWithContext;
+use wgproto::EncodeWithContext;
 use wgproto::InputBuffer;
+use wgproto::MacSigner;
 use wgproto::MacVerifier;
 use wgproto::Message;
 use wgproto::MessageKind;
@@ -38,12 +40,13 @@ use wgproto::Responder;
 use wgproto::Session;
 use wgsr::EncodeDecode;
 use wgsr::ExportFormat;
-use wgsr::Peer;
-use wgsr::PeerKind;
-use wgsr::PeerStatus;
 use wgsr::Request;
 use wgsr::RequestError;
 use wgsr::Response;
+use wgsr::RpcRequest;
+use wgsr::RpcRequestBody;
+use wgsr::RpcResponse;
+use wgsr::RpcResponseBody;
 use wgsr::Status;
 use wgsr::ToBase64;
 use wgsr::MAX_REQUEST_SIZE;
@@ -51,42 +54,26 @@ use wgsr::MAX_RESPONSE_SIZE;
 
 use crate::format_error;
 use crate::get_internet_addresses;
+use crate::AllowedPublicKeys;
 use crate::Config;
 use crate::Error;
-use crate::PeerConfig;
-use crate::ServerConfig;
 
 pub(crate) struct EventLoop {
+    #[allow(dead_code)]
     config_file: PathBuf,
     poll: Poll,
-    servers: HashMap<u16, Server>,
+    udp_server: UdpServer,
     unix_server: UnixListener,
     unix_clients: HashMap<usize, UnixClient>,
 }
 
 impl EventLoop {
     pub(crate) fn new(config: Config, config_file: PathBuf) -> Result<Self, Error> {
-        let mut servers = HashMap::with_capacity(config.servers.len());
         let poll = Poll::new()?;
-        for (i, server) in config.servers.into_iter().enumerate() {
-            let socket_addr =
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), server.listen_port.into());
-            let mut socket = UdpSocket::bind(socket_addr)?;
-            poll.registry()
-                .register(&mut socket, Token(i), Interest::READABLE)?;
-            servers.insert(
-                server.listen_port.into(),
-                Server {
-                    socket_addr,
-                    socket,
-                    public_key: (&server.private_key).into(),
-                    hub: Default::default(),
-                    spokes: Default::default(),
-                    other_peers: Default::default(),
-                    config: server,
-                },
-            );
-        }
+        let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen_port.into());
+        let mut udp_socket = UdpSocket::bind(socket_addr)?;
+        poll.registry()
+            .register(&mut udp_socket, UDP_SERVER_TOKEN, Interest::READABLE)?;
         // unix socket
         if let Some(directory) = config.unix_socket_path.parent() {
             create_dir_all(directory)?;
@@ -98,7 +85,20 @@ impl EventLoop {
         Ok(Self {
             config_file,
             poll,
-            servers,
+            udp_server: UdpServer {
+                socket: udp_socket,
+                public_key: (&config.private_key).into(),
+                private_key: config.private_key,
+                preshared_key: [0_u8; 32].into(),
+                auth_peers: Default::default(),
+                hub_to_spokes: Default::default(),
+                spoke_to_hub: Default::default(),
+                allowed_public_keys: config.allowed_public_keys,
+                socket_addr_to_public_key: Default::default(),
+                session_id_to_public_key: Default::default(),
+                source_to_public_key: Default::default(),
+                destination_to_public_key: Default::default(),
+            },
             unix_server,
             unix_clients: Default::default(),
         })
@@ -112,6 +112,7 @@ impl EventLoop {
         let mut events = Events::with_capacity(MAX_EVENTS);
         let mut buffer = [0_u8; MAX_PACKET_SIZE];
         loop {
+            self.dump();
             events.clear();
             match self.poll.poll(&mut events, None) {
                 Ok(()) => Ok(()),
@@ -121,6 +122,13 @@ impl EventLoop {
             for event in events.iter() {
                 let ret = match event.token() {
                     WAKE_TOKEN => return Ok(()),
+                    UDP_SERVER_TOKEN => {
+                        if event.is_readable() {
+                            Self::process_packet(&mut self.udp_server, buffer.as_mut_slice())
+                        } else {
+                            Ok(())
+                        }
+                    }
                     UNIX_SERVER_TOKEN => {
                         if event.is_readable() {
                             self.accept_unix_connections()
@@ -140,23 +148,11 @@ impl EventLoop {
                         Self::process_unix_client_event(
                             event,
                             client,
-                            &mut self.servers,
+                            &mut self.udp_server,
                             &mut self.poll,
-                            self.config_file.as_path(),
                         )
                     }
-                    Token(i) => {
-                        let port = i as u16;
-                        let peer = match self.servers.get_mut(&port) {
-                            Some(peer) => peer,
-                            None => continue,
-                        };
-                        if event.is_readable() {
-                            Self::process_packet(peer, buffer.as_mut_slice())
-                        } else {
-                            Ok(())
-                        }
-                    }
+                    Token(i) => Err(format_error!("unknown event {}", i)),
                 };
                 if let Err(e) = ret {
                     eprintln!("{}", e);
@@ -165,7 +161,34 @@ impl EventLoop {
         }
     }
 
-    fn process_packet(server: &mut Server, buffer: &mut [u8]) -> Result<(), Error> {
+    fn dump(&self) {
+        for (public_key, peer) in self.udp_server.auth_peers.iter() {
+            eprintln!(
+                "auth-peer {} {} {}->{}",
+                public_key.to_base64(),
+                peer.socket_addr,
+                peer.session.sender_index(),
+                peer.session.receiver_index()
+            );
+        }
+        for (hub, spokes) in self.udp_server.hub_to_spokes.iter() {
+            for spoke in spokes.iter() {
+                eprintln!("edge {} {}", hub.to_base64(), spoke.to_base64());
+            }
+        }
+        for ((sender_socket_addr, receiver_index), receiver_public_key) in
+            self.udp_server.destination_to_public_key.iter()
+        {
+            eprintln!(
+                "route {} {} -> {}",
+                sender_socket_addr,
+                receiver_index,
+                receiver_public_key.to_base64()
+            );
+        }
+    }
+
+    fn process_packet(server: &mut UdpServer, buffer: &mut [u8]) -> Result<(), Error> {
         let (n, from) = server.socket.recv_from(buffer)?;
         let packet = &buffer[..n];
         let mut buffer = InputBuffer::new(packet);
@@ -175,136 +198,223 @@ impl EventLoop {
         let kind = message.kind();
         match message {
             Message::HandshakeInitiation(message) => {
-                let sender_index = message.sender_index;
                 context.check_macs = true;
                 match context.verify(&mut buffer) {
                     Ok(_) => {
                         let (session, initiation, response_bytes) = Responder::respond(
                             server.public_key,
-                            server.config.private_key.clone(),
-                            &server.config.preshared_key,
+                            server.private_key.clone(),
+                            &server.preshared_key,
                             message,
                         )?;
-                        let peer = match server
-                            .config
-                            .peers
-                            .iter()
-                            .find(|peer| peer.public_key == initiation.static_public)
+                        if let AllowedPublicKeys::Set(allowed_public_keys) =
+                            &server.allowed_public_keys
                         {
-                            Some(peer) => peer,
-                            None => {
+                            if !allowed_public_keys.contains(&initiation.static_public) {
                                 return Err(format_error!(
                                     "untrusted public key: `{}`",
                                     initiation.static_public.to_base64()
-                                ))
-                            }
-                        };
-                        match peer.kind {
-                            PeerKind::Hub => {
-                                let new_hub = Hub {
-                                    public_key: initiation.static_public,
-                                    session,
-                                    socket_addr: from,
-                                };
-                                server.hub = Some(new_hub);
-                            }
-                            PeerKind::Spoke => {
-                                server.spokes.push(Spoke {
-                                    public_key: initiation.static_public,
-                                    session,
-                                    socket_addr: from,
-                                });
+                                ));
                             }
                         }
-                        eprintln!(
-                            "{}->:{} {}->wgsr {:?}",
-                            from, server.config.listen_port, peer.kind, kind
+                        server
+                            .socket_addr_to_public_key
+                            .insert(from, initiation.static_public);
+                        eprintln!("insert {} {}", from, session.sender_index());
+                        // sender and receiver are flipped here
+                        server.source_to_public_key.insert(
+                            (from, session.receiver_index().as_u32()),
+                            initiation.static_public,
                         );
+                        // sender and receiver are flipped here
+                        server
+                            .destination_to_public_key
+                            .insert((from, session.sender_index().as_u32()), server.public_key);
+                        server.auth_peers.insert(
+                            initiation.static_public,
+                            AuthPeer {
+                                session,
+                                socket_addr: from,
+                            },
+                        );
+                        eprintln!("{}->wgsr auth-peer->wgsr {:?}", from, kind);
                         server.socket.send_to(response_bytes.as_slice(), from)?;
                         eprintln!(
-                            ":{}->{} wgsr->{} {:?}",
-                            server.config.listen_port,
+                            "wgsr->{} wgsr->auth-peer {:?}",
                             from,
-                            peer.kind,
                             MessageKind::HandshakeResponse
                         );
                     }
-                    Err(e) => match server.hub.as_mut() {
-                        Some(hub) => {
-                            if from == hub.socket_addr {
-                                return Err(e.into());
-                            }
-                            server.other_peers.push(Peer {
-                                socket_addr: from,
-                                session_index: sender_index.into(),
-                                status: PeerStatus::Pending,
-                                kind: PeerKind::Spoke,
-                            });
-                            eprintln!("{}->{} spoke->hub {:?}", from, hub.socket_addr, kind);
-                            server.socket.send_to(packet, hub.socket_addr)?;
+                    Err(e) => {
+                        let from_public_key =
+                            server.socket_addr_to_public_key.get(&from).ok_or_else(|| {
+                                format_error!("no route for {:?} from {}: {}", kind, from, e)
+                            })?;
+                        if server.hub_to_spokes.contains_key(from_public_key) {
+                            return Err(format_error!(
+                                "handshake from `{}` failed verification: {}",
+                                from_public_key.to_base64(),
+                                e
+                            ));
                         }
-                        None => return Err(e.into()),
-                    },
+                        let to_public_key =
+                            server.spoke_to_hub.get(from_public_key).ok_or_else(|| {
+                                format_error!("no route for {:?} from {}", kind, from)
+                            })?;
+                        let to_socket_addr = server
+                            .auth_peers
+                            .get(to_public_key)
+                            .ok_or_else(|| {
+                                format_error!(
+                                    "no route for {:?} from {}: peer not unauthorized",
+                                    kind,
+                                    from
+                                )
+                            })?
+                            .socket_addr;
+                        eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
+                        server.socket.send_to(packet, to_socket_addr)?;
+                        server.session_id_to_public_key.insert(
+                            (to_socket_addr, message.sender_index.as_u32()),
+                            *from_public_key,
+                        );
+                        // sender and receiver are flipped here
+                        server.destination_to_public_key.insert(
+                            (to_socket_addr, message.sender_index.as_u32()),
+                            *from_public_key,
+                        );
+                    }
                 }
             }
-            Message::HandshakeResponse(message) => match server.hub.as_mut() {
-                Some(hub) => {
-                    if from == hub.socket_addr {
-                        if let Some(other_peer) = server.other_peers.iter_mut().find(|other_peer| {
-                            other_peer.session_index == message.receiver_index.as_u32()
-                        }) {
-                            other_peer.status = PeerStatus::Authorized;
-                            server.socket.send_to(packet, other_peer.socket_addr)?;
-                            eprintln!(
-                                "{}->{} hub->spoke {:?}",
-                                hub.socket_addr, other_peer.socket_addr, kind
-                            );
-                        }
-                        // add hub as a peer
-                        server.other_peers.push(Peer {
-                            socket_addr: hub.socket_addr,
-                            session_index: message.sender_index.into(),
-                            status: PeerStatus::Authorized,
-                            kind: PeerKind::Hub,
-                        });
-                    }
+            Message::HandshakeResponse(message) => {
+                let from_public_key = server
+                    .socket_addr_to_public_key
+                    .get(&from)
+                    .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+                if !server.hub_to_spokes.contains_key(from_public_key) {
+                    return Err(format_error!(
+                        "received handshake response from `{}` (spoke)",
+                        from_public_key.to_base64()
+                    ));
                 }
-                None => return Err(Error::other("no hub")),
-            },
+                let to_public_key = *server
+                    .session_id_to_public_key
+                    .get(&(from, message.receiver_index.as_u32()))
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no route for {:?} from {} session {}",
+                            kind,
+                            from,
+                            message.receiver_index
+                        )
+                    })?;
+                let to_socket_addr = server
+                    .auth_peers
+                    .get(&to_public_key)
+                    .ok_or_else(|| {
+                        format_error!("no route for {:?} from {}: peer not authorized", kind, from)
+                    })?
+                    .socket_addr;
+                server.socket.send_to(packet, to_socket_addr)?;
+                server.session_id_to_public_key.insert(
+                    (to_socket_addr, message.sender_index.as_u32()),
+                    *from_public_key,
+                );
+                server
+                    .destination_to_public_key
+                    .insert((from, message.receiver_index.as_u32()), to_public_key);
+                server.destination_to_public_key.insert(
+                    (to_socket_addr, message.sender_index.as_u32()),
+                    *from_public_key,
+                );
+                eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
+            }
             Message::PacketData(message) => {
-                match server.hub.as_mut() {
-                    Some(hub) => {
-                        if from == hub.socket_addr {
-                            if message.receiver_index == hub.session.sender_index() {
-                                let _data = hub.session.receive(&message)?;
-                            } else if let Some(other_peer) =
-                                server.other_peers.iter_mut().find(|other_peer| {
-                                    other_peer.session_index == message.receiver_index.as_u32()
-                                })
-                            {
-                                eprintln!(
-                                    "{}->{} hub->spoke {:?}({})",
-                                    from,
-                                    other_peer.socket_addr,
-                                    kind,
-                                    packet.len(),
-                                );
-                                server.socket.send_to(packet, other_peer.socket_addr)?;
-                            }
-                        } else {
-                            eprintln!(
-                                "{}->{} spoke->hub {:?}({})",
-                                from,
-                                hub.socket_addr,
+                let from_public_key = server
+                    .socket_addr_to_public_key
+                    .get(&from)
+                    .ok_or_else(|| format_error!("no route for {:?} from {}", kind, from))?;
+                let (from_kind, to_kind) = if server.hub_to_spokes.contains_key(from_public_key) {
+                    ("hub", "spoke")
+                } else {
+                    ("spoke", "hub")
+                };
+                let to_public_key = server
+                    .destination_to_public_key
+                    .get(&(from, message.receiver_index.as_u32()))
+                    .ok_or_else(|| {
+                        format_error!(
+                            "no route for {:?} from {} session {}",
+                            kind,
+                            from,
+                            message.receiver_index
+                        )
+                    })?;
+                if to_public_key == &server.public_key {
+                    let session = &mut server
+                        .auth_peers
+                        .get_mut(from_public_key)
+                        .ok_or_else(|| {
+                            format_error!(
+                                "no route for {:?} from {}: peer not authorized",
                                 kind,
-                                packet.len(),
-                            );
-                            server.socket.send_to(packet, hub.socket_addr)?;
+                                from
+                            )
+                        })?
+                        .session;
+                    let data = session.receive(&message)?;
+                    if !data.is_empty() {
+                        let request = RpcRequest::decode(&data)?;
+                        match request.body {
+                            RpcRequestBody::SetPeers(public_keys) => {
+                                for public_key in public_keys.iter() {
+                                    server.spoke_to_hub.insert(*public_key, *from_public_key);
+                                }
+                                server.hub_to_spokes.insert(*from_public_key, public_keys);
+                                let response = RpcResponse {
+                                    request_id: request.id,
+                                    body: RpcResponseBody::SetPeers(Ok(())),
+                                };
+                                let mut response_bytes = Vec::new();
+                                response.encode(&mut response_bytes);
+                                let message = session.send(&response_bytes)?;
+                                let mut buffer = Vec::new();
+                                let mut signer = MacSigner::new(&server.public_key, None);
+                                message.encode_with_context(&mut buffer, &mut signer);
+                                server.socket.send_to(packet, from)?;
+                            }
                         }
                     }
-                    None => {
-                        // TODO
-                    }
+                    eprintln!("received {:?}", data);
+                    eprintln!(
+                        "{}->local {}->wgsr {:?}({})",
+                        from,
+                        from_kind,
+                        kind,
+                        packet.len(),
+                    );
+                } else {
+                    let to_socket_addr = server
+                        .auth_peers
+                        .get(to_public_key)
+                        .ok_or_else(|| {
+                            format_error!(
+                                "no route for {:?} from {}: peer not authorized",
+                                kind,
+                                from
+                            )
+                        })?
+                        .socket_addr;
+                    server.socket.send_to(packet, to_socket_addr)?;
+                    eprintln!(
+                        "{}->{} {}->{} {:?}({})",
+                        from,
+                        to_socket_addr,
+                        from_kind,
+                        to_kind,
+                        kind,
+                        packet.len(),
+                    );
                 }
             }
         }
@@ -341,103 +451,23 @@ impl EventLoop {
     fn process_unix_client_event(
         event: &Event,
         client: &mut UnixClient,
-        servers: &mut HashMap<u16, Server>,
+        udp_server: &mut UdpServer,
         poll: &mut Poll,
-        config_file: &Path,
     ) -> Result<(), Error> {
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
             client.fill_buf()?;
             while let Some(request) = client.read_request()? {
                 let response = match request {
-                    Request::Running => Response::Running(Ok(())),
+                    Request::Running => Response::Running,
                     Request::Status => Response::Status(Ok(Status {
-                        servers: servers.iter().map(|(_, v)| v.into()).collect(),
+                        auth_peers: Default::default(), //udp_server.auth_peers.iter().map(|(k, v)| (k, v.into())).collect(),
+                        peers: Default::default(),
+                        routes: Default::default(),
                     })),
-                    Request::RelayAdd {
-                        listen_port,
-                        persistent,
-                    } => {
+                    Request::Export { format } => {
                         let response =
-                            Self::add_relay(listen_port, persistent, config_file, poll, servers)
-                                .map_err(RequestError::map);
-                        Response::RelayAdd(response)
-                    }
-                    Request::RelayRemove {
-                        listen_port,
-                        persistent,
-                    } => {
-                        let response =
-                            Self::remove_relay(listen_port, persistent, config_file, servers)
-                                .map_err(RequestError::map);
-                        Response::RelayRemove(response)
-                    }
-                    Request::HubAdd {
-                        listen_port,
-                        public_key,
-                        persistent,
-                    } => {
-                        let response = Self::add_hub(
-                            listen_port,
-                            public_key,
-                            persistent,
-                            config_file,
-                            servers,
-                        )
-                        .map_err(RequestError::map);
-                        Response::HubAdd(response)
-                    }
-                    Request::HubRemove {
-                        listen_port,
-                        public_key,
-                        persistent,
-                    } => {
-                        let response = Self::remove_hub(
-                            listen_port,
-                            public_key,
-                            persistent,
-                            config_file,
-                            servers,
-                        )
-                        .map_err(RequestError::map);
-                        Response::HubRemove(response)
-                    }
-                    Request::SpokeAdd {
-                        listen_port,
-                        public_key,
-                        persistent,
-                    } => {
-                        let response = Self::add_spoke(
-                            listen_port,
-                            public_key,
-                            persistent,
-                            config_file,
-                            servers,
-                        )
-                        .map_err(RequestError::map);
-                        Response::SpokeAdd(response)
-                    }
-                    Request::SpokeRemove {
-                        listen_port,
-                        public_key,
-                        persistent,
-                    } => {
-                        let response = Self::remove_spoke(
-                            listen_port,
-                            public_key,
-                            persistent,
-                            config_file,
-                            servers,
-                        )
-                        .map_err(RequestError::map);
-                        Response::SpokeRemove(response)
-                    }
-                    Request::Export {
-                        listen_port,
-                        format,
-                    } => {
-                        let response = Self::export_config(listen_port, format, servers)
-                            .map_err(RequestError::map);
+                            Self::export_config(format, udp_server).map_err(RequestError::map);
                         Response::Export(response)
                     }
                 };
@@ -457,220 +487,22 @@ impl EventLoop {
         Ok(())
     }
 
-    fn add_relay(
-        listen_port: Option<NonZeroU16>,
-        persistent: bool,
-        config_file: &Path,
-        poll: &mut Poll,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<NonZeroU16, Error> {
-        if servers.len() == MAX_RELAYS {
-            return Err(format_error!("max. no. of relays reached"));
-        }
-        let (socket_addr, mut socket, listen_port) = match listen_port {
-            Some(listen_port) => {
-                let port: u16 = listen_port.into();
-                let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
-                let socket = UdpSocket::bind(socket_addr)?;
-                (socket_addr, socket, listen_port)
-            }
-            None => Self::allocate_listen_port(servers)?,
-        };
-        let private_key = PrivateKey::random();
-        let preshared_key = PresharedKey::random();
-        poll.registry().register(
-            &mut socket,
-            Token(socket_addr.port() as usize),
-            Interest::READABLE,
-        )?;
-        let server = Server {
-            socket_addr,
-            socket,
-            public_key: (&private_key).into(),
-            hub: Default::default(),
-            spokes: Default::default(),
-            other_peers: Default::default(),
-            config: ServerConfig {
-                private_key,
-                preshared_key,
-                listen_port,
-                peers: Default::default(),
-            },
-        };
-        if persistent {
-            update_config(config_file, |config| {
-                config.servers.push(server.config.clone());
-                Ok(())
-            })?;
-        }
-        servers.insert(socket_addr.port(), server);
-        Ok(listen_port)
-    }
-
-    fn allocate_listen_port(
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(SocketAddr, UdpSocket, NonZeroU16), Error> {
-        const MAX_ATTEMPTS: usize = 99999;
-        for _ in 0..MAX_ATTEMPTS {
-            let port: u16 = OsRng.gen_range(RELAY_TOKEN_MIN..(RELAY_TOKEN_MAX + 1)) as u16;
-            if servers.contains_key(&port) {
-                continue;
-            }
-            let socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
-            let socket = match UdpSocket::bind(socket_addr) {
-                Err(ref e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                    continue;
-                }
-                other => other,
-            }?;
-            return Ok((socket_addr, socket, port.try_into().map_err(Error::other)?));
-        }
-        Err(format_error!(
-            "failed to allocate listen port in {} attempts",
-            MAX_ATTEMPTS
-        ))
-    }
-
-    fn remove_relay(
-        listen_port: NonZeroU16,
-        persistent: bool,
-        config_file: &Path,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(), Error> {
-        let port: u16 = listen_port.into();
-        if servers.remove(&port).is_none() {
-            return Err(format_error!("no relay with listen-port `{}`", listen_port));
-        }
-        if persistent {
-            update_config(config_file, |config| {
-                config
-                    .servers
-                    .retain(|server| server.listen_port != listen_port);
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn add_hub(
-        listen_port: NonZeroU16,
-        public_key: PublicKey,
-        persistent: bool,
-        config_file: &Path,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(), Error> {
-        let port: u16 = listen_port.into();
-        let relay = servers
-            .get_mut(&port)
-            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
-        if relay
-            .config
-            .peers
-            .iter()
-            .any(|peer| peer.public_key == public_key)
-        {
-            return Err(format_error!(
-                "another hub/spoke with public key `{}` is attached to listen port `{}`",
-                public_key.to_base64(),
-                listen_port
-            ));
-        }
-        let peer = PeerConfig {
-            public_key,
-            kind: PeerKind::Hub,
-        };
-        relay.config.peers.push(peer.clone());
-        if persistent {
-            update_config(config_file, |config| {
-                let server = config
-                    .servers
-                    .iter_mut()
-                    .find(|server| server.listen_port == listen_port)
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no relay with listen port `{}` in `{}`",
-                            listen_port,
-                            config_file.display()
-                        )
-                    })?;
-                server.peers.push(peer);
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn remove_hub(
-        listen_port: NonZeroU16,
-        public_key: PublicKey,
-        persistent: bool,
-        config_file: &Path,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(), Error> {
-        let port: u16 = listen_port.into();
-        let relay = servers
-            .get_mut(&port)
-            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
-        let old_len = relay.config.peers.len();
-        relay
-            .config
-            .peers
-            .retain(|peer| peer.kind != PeerKind::Hub || peer.public_key != public_key);
-        let new_len = relay.config.peers.len();
-        if new_len == old_len {
-            return Err(format_error!(
-                "no hub with public key `{}`",
-                public_key.to_base64()
-            ));
-        }
-        relay.hub = None;
-        if persistent {
-            update_config(config_file, |config| {
-                let server = config
-                    .servers
-                    .iter_mut()
-                    .find(|server| server.listen_port == listen_port)
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no relay with listen port `{}` in `{}`",
-                            listen_port,
-                            config_file.display()
-                        )
-                    })?;
-                server
-                    .peers
-                    .retain(|peer| peer.kind != PeerKind::Hub || peer.public_key != public_key);
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn export_config(
-        listen_port: NonZeroU16,
-        format: ExportFormat,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<String, Error> {
+    fn export_config(format: ExportFormat, udp_server: &mut UdpServer) -> Result<String, Error> {
         use std::fmt::Write;
-        let port: u16 = listen_port.into();
-        let relay = servers
-            .get_mut(&port)
-            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
         match format {
             ExportFormat::Config => {
                 let mut buf = String::with_capacity(4096);
                 writeln!(&mut buf, "# wgsr authentication peer")?;
                 writeln!(&mut buf, "[Peer]")?;
-                writeln!(&mut buf, "PublicKey = {}", relay.public_key.to_base64())?;
                 writeln!(
                     &mut buf,
-                    "PresharedKey = {}",
-                    relay.config.preshared_key.to_base64()
+                    "PublicKey = {}",
+                    udp_server.public_key.to_base64()
                 )?;
                 let mut internet_addresses = get_internet_addresses()?;
                 internet_addresses.sort();
                 let mut iter = internet_addresses.into_iter();
-                let port = relay.socket_addr.port();
+                let port = udp_server.socket.local_addr()?.port();
                 match iter.next() {
                     Some(addr) => match addr {
                         IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
@@ -692,107 +524,12 @@ impl EventLoop {
                 writeln!(&mut buf, "AllowedIPs =")?;
                 Ok(buf)
             }
-            ExportFormat::PublicKey => Ok(relay.public_key.to_base64()),
-            ExportFormat::PresharedKey => Ok(relay.config.preshared_key.to_base64()),
+            ExportFormat::PublicKey => Ok(udp_server.public_key.to_base64()),
         }
-    }
-
-    fn add_spoke(
-        listen_port: NonZeroU16,
-        public_key: PublicKey,
-        persistent: bool,
-        config_file: &Path,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(), Error> {
-        let port: u16 = listen_port.into();
-        let relay = servers
-            .get_mut(&port)
-            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
-        if relay
-            .config
-            .peers
-            .iter()
-            .any(|peer| peer.public_key == public_key)
-        {
-            return Err(format_error!(
-                "another hub/spoke with public key `{}` is attached to listen port `{}`",
-                public_key.to_base64(),
-                listen_port
-            ));
-        }
-        let peer = PeerConfig {
-            public_key,
-            kind: PeerKind::Spoke,
-        };
-        relay.config.peers.push(peer.clone());
-        if persistent {
-            update_config(config_file, |config| {
-                let server = config
-                    .servers
-                    .iter_mut()
-                    .find(|server| server.listen_port == listen_port)
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no relay with listen port `{}` in `{}`",
-                            listen_port,
-                            config_file.display()
-                        )
-                    })?;
-                server.peers.push(peer);
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn remove_spoke(
-        listen_port: NonZeroU16,
-        public_key: PublicKey,
-        persistent: bool,
-        config_file: &Path,
-        servers: &mut HashMap<u16, Server>,
-    ) -> Result<(), Error> {
-        let port: u16 = listen_port.into();
-        let relay = servers
-            .get_mut(&port)
-            .ok_or_else(|| format_error!("no relay with listen port `{}`", listen_port))?;
-        let old_len = relay.config.peers.len();
-        relay.spokes.retain(|spoke| spoke.public_key != public_key);
-        relay
-            .config
-            .peers
-            .retain(|peer| peer.kind != PeerKind::Spoke || peer.public_key != public_key);
-        let new_len = relay.config.peers.len();
-        if new_len == old_len {
-            return Err(format_error!(
-                "no hub with public key `{}`",
-                public_key.to_base64()
-            ));
-        }
-        if persistent {
-            update_config(config_file, |config| {
-                let server = config
-                    .servers
-                    .iter_mut()
-                    .find(|server| server.listen_port == listen_port)
-                    .ok_or_else(|| {
-                        format_error!(
-                            "no relay with listen port `{}` in `{}`",
-                            listen_port,
-                            config_file.display()
-                        )
-                    })?;
-                server
-                    .peers
-                    .retain(|peer| peer.kind != PeerKind::Spoke || peer.public_key != public_key);
-                Ok(())
-            })?;
-        }
-        Ok(())
     }
 }
 
-fn update_config<F>(config_file: &Path, f: F) -> Result<(), Error>
+fn _update_config<F>(config_file: &Path, f: F) -> Result<(), Error>
 where
     F: FnOnce(&'_ mut Config) -> Result<(), Error>,
 {
@@ -804,44 +541,29 @@ where
     Ok(())
 }
 
-struct Server {
-    socket_addr: SocketAddr,
+struct UdpServer {
     socket: UdpSocket,
+    private_key: PrivateKey,
+    preshared_key: PresharedKey,
     public_key: PublicKey,
-    hub: Option<Hub>,
-    spokes: Vec<Spoke>,
-    other_peers: Vec<Peer>,
-    config: ServerConfig,
+    auth_peers: HashMap<PublicKey, AuthPeer>,
+    hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
+    spoke_to_hub: HashMap<PublicKey, PublicKey>,
+    allowed_public_keys: AllowedPublicKeys,
+    socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
+    // (sender-socket-address, sender-index) -> sender-public-key
+    source_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
+    // (sender-socket-address, receiver-index) -> receiver-public-key
+    destination_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
+    // (to-socket-address, sender-index) -> from-public-key
+    // (from-socket-address, receiver-index) -> to-public-key
+    session_id_to_public_key: HashMap<(SocketAddr, u32), PublicKey>,
 }
 
-impl From<&Server> for wgsr::Server {
-    fn from(other: &Server) -> Self {
-        Self {
-            socket_addr: other.socket_addr,
-            hub: other.hub.as_ref().map(Into::into),
-            spokes: other.spokes.iter().map(Into::into).collect(),
-            peers: other.other_peers.clone(),
-        }
-    }
-}
-
-struct Hub {
-    public_key: PublicKey,
+struct AuthPeer {
     session: Session,
     socket_addr: SocketAddr,
 }
-
-impl From<&Hub> for wgsr::Hub {
-    fn from(other: &Hub) -> Self {
-        Self {
-            socket_addr: other.socket_addr,
-            public_key: other.public_key,
-            session_index: other.session.sender_index().into(),
-        }
-    }
-}
-
-type Spoke = Hub;
 
 struct UnixClient {
     fd: RawFd,
@@ -886,6 +608,7 @@ impl UnixClient {
     }
 }
 
+#[allow(dead_code)]
 fn get_tmp_file(path: &Path) -> Result<PathBuf, Error> {
     let filename = path
         .file_name()
@@ -900,19 +623,14 @@ fn get_tmp_file(path: &Path) -> Result<PathBuf, Error> {
 const MAX_EVENTS: usize = 1024;
 const MAX_PACKET_SIZE: usize = 65535;
 const WAKE_TOKEN: Token = Token(usize::MAX);
-const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 1);
+const UDP_SERVER_TOKEN: Token = Token(usize::MAX - 1);
+const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 2);
 const MAX_UNIX_CLIENTS: usize = 1000;
-const UNIX_TOKEN_MAX: usize = usize::MAX - 2;
+const UNIX_TOKEN_MAX: usize = usize::MAX - 3;
 const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
-const RELAY_TOKEN_MAX: usize = u16::MAX as usize;
-const RELAY_TOKEN_MIN: usize = 1001;
-const MAX_RELAYS: usize = RELAY_TOKEN_MAX - RELAY_TOKEN_MIN + 1;
 
-const_assert!(RELAY_TOKEN_MIN <= RELAY_TOKEN_MAX);
-const_assert!(RELAY_TOKEN_MAX < UNIX_TOKEN_MIN);
 const_assert!(UNIX_TOKEN_MIN <= UNIX_TOKEN_MAX);
 const_assert!(UNIX_TOKEN_MAX < UNIX_SERVER_TOKEN.0);
-const_assert!(UNIX_SERVER_TOKEN.0 < WAKE_TOKEN.0);
-const_assert!(MAX_RELAYS <= u16::MAX as usize);
+const_assert!(UDP_SERVER_TOKEN.0 < WAKE_TOKEN.0);
+const_assert!(UNIX_SERVER_TOKEN.0 < UDP_SERVER_TOKEN.0);
 const_assert!(MAX_UNIX_CLIENTS == UNIX_TOKEN_MAX - UNIX_TOKEN_MIN + 1);
-const_assert!(MAX_RELAYS == RELAY_TOKEN_MAX - RELAY_TOKEN_MIN + 1);

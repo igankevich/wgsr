@@ -23,7 +23,6 @@ mod unix;
 #[command(
     about = "Wireguard Secure Relay.",
     long_about = None,
-    arg_required_else_help = true,
     trailing_var_arg = true
 )]
 struct Args {
@@ -49,25 +48,8 @@ enum Command {
     Running,
     /// Get relay status.
     Status,
-    /// Relay commands.
-    Relay {
-        #[command(subcommand)]
-        command: RelayCommand,
-    },
-    /// Hub commands.
-    Hub {
-        #[command(subcommand)]
-        command: HubCommand,
-    },
-    /// Spoke commands.
-    Spoke {
-        #[command(subcommand)]
-        command: SpokeCommand,
-    },
     /// Export peer configuration.
     Export {
-        /// Listen port.
-        listen_port: NonZeroU16,
         /// Output format.
         #[arg(
             short = 'f',
@@ -157,12 +139,11 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         Some(Command::Running) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             match client.call(Request::Running)? {
-                Response::Running(status) => status?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            Ok(ExitCode::SUCCESS)
+                Response::Running => Ok(ExitCode::SUCCESS),
+                _ => Ok(ExitCode::FAILURE),
+            }
         }
-        Some(Command::Status) => {
+        Some(Command::Status) | None => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             let status = match client.call(Request::Status)? {
                 Response::Status(status) => status?,
@@ -171,157 +152,41 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             print_status(&status);
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Relay { command }) => match command {
-            RelayCommand::Add { listen_port } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                let allocated_listen_port = match client.call(Request::RelayAdd {
-                    listen_port,
-                    persistent: true,
-                })? {
-                    Response::RelayAdd(listen_port) => listen_port?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                if listen_port.is_none() {
-                    println!("{}", allocated_listen_port);
-                }
-                Ok(ExitCode::SUCCESS)
-            }
-            RelayCommand::Rm { listen_port } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                match client.call(Request::RelayRemove {
-                    listen_port,
-                    persistent: true,
-                })? {
-                    Response::RelayRemove(result) => result?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Some(Command::Hub { command }) => match command {
-            HubCommand::Add {
-                listen_port,
-                public_key,
-            } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                match client.call(Request::HubAdd {
-                    listen_port,
-                    public_key,
-                    persistent: true,
-                })? {
-                    Response::HubAdd(result) => result?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                Ok(ExitCode::SUCCESS)
-            }
-            HubCommand::Rm {
-                listen_port,
-                public_key,
-            } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                match client.call(Request::HubRemove {
-                    listen_port,
-                    public_key,
-                    persistent: true,
-                })? {
-                    Response::HubRemove(result) => result?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Some(Command::Spoke { command }) => match command {
-            SpokeCommand::Add {
-                listen_port,
-                public_key,
-            } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                match client.call(Request::SpokeAdd {
-                    listen_port,
-                    public_key,
-                    persistent: true,
-                })? {
-                    Response::SpokeAdd(result) => result?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                Ok(ExitCode::SUCCESS)
-            }
-            SpokeCommand::Rm {
-                listen_port,
-                public_key,
-            } => {
-                let mut client = UnixClient::new(args.unix_socket_path)?;
-                match client.call(Request::SpokeRemove {
-                    listen_port,
-                    public_key,
-                    persistent: true,
-                })? {
-                    Response::SpokeRemove(result) => result?,
-                    _ => return Ok(ExitCode::FAILURE),
-                };
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Some(Command::Export {
-            listen_port,
-            format,
-        }) => {
+        Some(Command::Export { format }) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
-            let config = match client.call(Request::Export {
-                listen_port,
-                format,
-            })? {
+            let config = match client.call(Request::Export { format })? {
                 Response::Export(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
             print!("{}", config);
             Ok(ExitCode::SUCCESS)
         }
-        None => Ok(ExitCode::FAILURE),
     }
 }
 
 fn print_status(status: &Status) {
-    if status.servers.is_empty() {
-        return;
-    }
     println!(
-        "{:<23}{:<23}{:<23}{:<23}{:<23}{:<46}",
-        "Local", "Type", "Status", "Remote", "Session", "PublicKey"
+        "{:<23}{:<23}{:<23}{:<23}{:<46}",
+        "Type", "Status", "Remote", "Session", "PublicKey"
     );
-    for server in status.servers.iter() {
-        if let Some(hub) = server.hub.as_ref() {
-            println!(
-                "{:<23}{:<23}{:<23}{:<23}{:<23}{}",
-                server.socket_addr,
-                "hub-auth",
-                "authorized",
-                hub.socket_addr,
-                hub.session_index,
-                hub.public_key.to_base64(),
-            );
-        }
-        for spoke in server.spokes.iter() {
-            println!(
-                "{:<23}{:<23}{:<23}{:<23}{:<23}{}",
-                server.socket_addr,
-                "spoke-auth",
-                "authorized",
-                spoke.socket_addr,
-                spoke.session_index,
-                spoke.public_key.to_base64(),
-            );
-        }
-        for other_peer in server.peers.iter() {
-            println!(
-                "{:<23}{:<23}{:<23}{:<23}{:<23}",
-                server.socket_addr,
-                other_peer.kind.as_str(),
-                other_peer.status.as_str(),
-                other_peer.socket_addr,
-                other_peer.session_index,
-            );
-        }
+    for peer in status.auth_peers.iter() {
+        println!(
+            "{:<23}{:<23}{:<23}{:<23}{}",
+            "auth",
+            "authorized",
+            peer.socket_addr,
+            peer.session_index,
+            peer.public_key.to_base64(),
+        );
+    }
+    for peer in status.peers.iter() {
+        println!(
+            "{:<23}{:<23}{:<23}{:<23}",
+            "peer",
+            peer.status.as_str(),
+            peer.socket_addr,
+            peer.session_index,
+        );
     }
     println!("-");
 }
@@ -339,7 +204,6 @@ fn export_format_parser(
     match s {
         "config" => Ok(ExportFormat::Config),
         "public-key" => Ok(ExportFormat::PublicKey),
-        "preshared-key" => Ok(ExportFormat::PresharedKey),
         other => Err(format!("unknown export format: `{}`", other).into()),
     }
 }

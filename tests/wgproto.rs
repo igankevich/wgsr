@@ -10,7 +10,8 @@ use wgproto::PresharedKey;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgsr::FromBase64;
-use wgsr::ToBase64;
+use wgsr::RpcRequest;
+use wgsr::RpcRequestBody;
 
 use crate::wgsrd::Wgsrd;
 
@@ -25,35 +26,15 @@ fn echo_server_one_hub_one_spoke() {
     // run wgsrd
     let wgsrd = Wgsrd::new();
     wgsrd.wait_until_started();
-    let output = wgsrd.wgsr(["relay", "add"]).output().unwrap();
-    let port = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
-    let port = port.trim();
-    assert_output!(output);
     let output = wgsrd
-        .wgsr(["hub", "add", port, hub_public_key.to_base64().as_str()])
-        .output()
-        .unwrap();
-    assert_success!(output);
-    let output = wgsrd
-        .wgsr(["spoke", "add", port, spoke_public_key.to_base64().as_str()])
-        .output()
-        .unwrap();
-    assert_success!(output);
-    let output = wgsrd
-        .wgsr(["export", "--format=public-key", port])
+        .wgsr(["export", "--format=public-key"])
         .output()
         .unwrap();
     let wgsrd_public_key = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
     let wgsrd_public_key = PublicKey::from_base64(wgsrd_public_key.trim()).unwrap();
+    let wgsrd_preshared_key: PresharedKey = [0_u8; 32].into();
     assert_output!(output);
-    let output = wgsrd
-        .wgsr(["export", "--format=preshared-key", port])
-        .output()
-        .unwrap();
-    let wgsrd_preshared_key = String::from_utf8_lossy(output.stdout.as_slice()).to_string();
-    let wgsrd_preshared_key = PresharedKey::from_base64(wgsrd_preshared_key.trim()).unwrap();
-    assert_output!(output);
-    let wgsrd_port: u16 = port.parse().unwrap();
+    let wgsrd_port: u16 = wgsrd.listen_port();
     let wgsrd_socket_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), wgsrd_port);
     // setup wireguard nodes
     let preshared_key = PresharedKey::random();
@@ -104,6 +85,17 @@ fn echo_server_one_hub_one_spoke() {
     hub.receive().unwrap();
     hub.flush(&mut hub_socket).unwrap();
     eprintln!("hub authorized");
+    let request = RpcRequest {
+        id: 1,
+        body: RpcRequestBody::SetPeers([spoke_public_key].into()),
+    };
+    let buffer = request.encode_to_vec();
+    hub.send(buffer, &wgsrd_public_key).unwrap();
+    hub.flush(&mut hub_socket).unwrap();
+    hub.fill_buf_once(&mut hub_socket).unwrap();
+    hub.receive().unwrap();
+    hub.flush(&mut hub_socket).unwrap();
+    eprintln!("public keys sent");
     let mut spoke_socket = UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).unwrap();
     // authorize spoke
     spoke.advance(Instant::now()).unwrap();

@@ -2,6 +2,7 @@
 #![allow(clippy::panic)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
@@ -16,6 +17,7 @@ pub struct Wgsrd {
     #[allow(dead_code)]
     workdir: TempDir,
     unix_socket_path: PathBuf,
+    listen_port: u16,
     child: Child,
 }
 
@@ -25,11 +27,13 @@ impl Wgsrd {
         let workdir = tempdir().unwrap();
         let config_file = workdir.path().join("wgsrd.conf");
         let unix_socket_path = workdir.path().join(".wgsrd-socket");
+        let listen_port = random_port();
         let mut config = String::new();
         writeln!(
             &mut config,
-            "[Unix]\nUnixSocketPath = {}",
-            unix_socket_path.display()
+            "[Relay]\nUnixSocketPath = {}\nListenPort = {}\nAllowedPublicKeys = all\n",
+            unix_socket_path.display(),
+            listen_port,
         )
         .unwrap();
         std::fs::write(config_file.as_path(), config).unwrap();
@@ -40,8 +44,13 @@ impl Wgsrd {
         Self {
             workdir,
             unix_socket_path,
+            listen_port,
             child,
         }
+    }
+
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port
     }
 
     pub fn wait_until_started(&self) {
@@ -83,6 +92,14 @@ impl Drop for Wgsrd {
     fn drop(&mut self) {
         self.child.kill().unwrap();
     }
+}
+
+fn random_port() -> u16 {
+    UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 #[macro_export]
