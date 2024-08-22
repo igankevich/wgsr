@@ -25,7 +25,6 @@ use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
 use wgx::AllowedPublicKeys;
-use wgx::ExportFormat;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
 use wgx::RpcRequest;
@@ -384,41 +383,40 @@ impl WireguardRelay {
         })
     }
 
-    pub(crate) fn export_config(&self, format: ExportFormat) -> Result<String, Error> {
+    pub(crate) fn export_config(&self) -> Result<String, Error> {
         use std::fmt::Write;
-        match format {
-            ExportFormat::Config => {
-                let mut buf = String::with_capacity(4096);
-                writeln!(&mut buf, "# wgx authentication peer")?;
-                writeln!(&mut buf, "[Peer]")?;
-                writeln!(&mut buf, "PublicKey = {}", self.public_key.to_base64())?;
-                let mut internet_addresses = get_internet_addresses()?;
-                internet_addresses.sort();
-                let mut iter = internet_addresses.into_iter();
-                let port = self.socket.local_addr()?.port();
-                match iter.next() {
-                    Some(addr) => match addr {
-                        IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
-                        IpAddr::V6(addr) => writeln!(&mut buf, "Endpoint = [{}]:{}", addr, port)?,
-                    },
-                    None => {
-                        writeln!(&mut buf, "# no internet addresses found")?;
-                        writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
-                    }
-                }
-                for addr in iter {
-                    match addr {
-                        IpAddr::V4(addr) => writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?,
-                        IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
-                    }
-                }
-                writeln!(&mut buf, "PersistentKeepalive = 23")?;
-                writeln!(&mut buf, "# no IPs are allowed")?;
-                writeln!(&mut buf, "AllowedIPs =")?;
-                Ok(buf)
+        let mut buf = String::with_capacity(4096);
+        writeln!(&mut buf, "# wgx authentication peer")?;
+        writeln!(&mut buf, "[Peer]")?;
+        writeln!(&mut buf, "PublicKey = {}", self.public_key.to_base64())?;
+        let mut internet_addresses = get_internet_addresses()?;
+        internet_addresses.sort();
+        let mut iter = internet_addresses.into_iter();
+        let port = self.socket.local_addr()?.port();
+        match iter.next() {
+            Some(addr) => match addr {
+                IpAddr::V4(addr) => writeln!(&mut buf, "Endpoint = {}:{}", addr, port)?,
+                IpAddr::V6(addr) => writeln!(&mut buf, "Endpoint = [{}]:{}", addr, port)?,
+            },
+            None => {
+                writeln!(&mut buf, "# no internet addresses found")?;
+                writeln!(&mut buf, "# Endpoint = ENDPOINT:{}", port)?;
             }
-            ExportFormat::PublicKey => Ok(self.public_key.to_base64()),
         }
+        for addr in iter {
+            match addr {
+                IpAddr::V4(addr) => writeln!(&mut buf, "# Endpoint = {}:{}", addr, port)?,
+                IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
+            }
+        }
+        writeln!(&mut buf, "PersistentKeepalive = 23")?;
+        writeln!(&mut buf, "# no IPs are allowed")?;
+        writeln!(&mut buf, "AllowedIPs =")?;
+        Ok(buf)
+    }
+
+    pub(crate) fn public_key(&self) -> &PublicKey {
+        &self.public_key
     }
 
     pub(crate) fn dump(&self) {

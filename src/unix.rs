@@ -36,14 +36,16 @@ const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);
 pub enum UnixRequest {
     Running,
     Status,
-    Export { format: ExportFormat },
+    PublicKey,
+    Export,
 }
 
 #[derive(Decode, Encode)]
-#[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq, Debug))]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub enum UnixResponse {
     Running,
     Status(Result<Status, UnixRequestError>),
+    PublicKey(#[bincode(with_serde)] Result<PublicKey, UnixRequestError>),
     Export(Result<String, UnixRequestError>),
 }
 
@@ -184,7 +186,7 @@ impl FromStr for AllowedPublicKeys {
     }
 }
 
-#[derive(Decode, Encode)]
+#[derive(Decode, Encode, Serialize, Deserialize)]
 #[cfg_attr(test, derive(arbitrary::Arbitrary, PartialEq, Eq))]
 pub struct UnixRequestError(pub String);
 
@@ -292,9 +294,22 @@ mod tests {
             Ok(match i {
                 0 => UnixRequest::Running,
                 1 => UnixRequest::Status,
-                _ => UnixRequest::Export {
-                    format: u.arbitrary()?,
-                },
+                _ => UnixRequest::Export,
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for UnixResponse {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let i: usize = u.int_in_range(0..=3)?;
+            Ok(match i {
+                0 => UnixResponse::Running,
+                1 => UnixResponse::Status(u.arbitrary()?),
+                2 => UnixResponse::PublicKey(
+                    u.arbitrary::<Result<[u8; 32], UnixRequestError>>()?
+                        .map(Into::into),
+                ),
+                _ => UnixResponse::Export(u.arbitrary()?),
             })
         }
     }
