@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem::take;
@@ -27,6 +29,7 @@ use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
+use wgproto::SessionIndex;
 use wgx::AllowedPublicKeys;
 use wgx::Routes;
 use wgx::RpcDecode;
@@ -57,6 +60,7 @@ pub(crate) struct WireguardRelay {
     // (sender-socket-address, receiver-index) -> receiver-public-key
     // (receiver-socket-address, sender-index) -> sender-public-key
     sessions: HashMap<(SocketAddr, u32), PublicKey>,
+    events: BinaryHeap<ExpiryEvent>,
     buffer: Vec<u8>,
 }
 
@@ -77,6 +81,7 @@ impl WireguardRelay {
             allowed_public_keys: config.allowed_public_keys,
             socket_addr_to_public_key: Default::default(),
             sessions: Default::default(),
+            events: Default::default(),
             buffer: vec![0_u8; MAX_PACKET_SIZE],
         })
     }
@@ -169,6 +174,11 @@ impl WireguardRelay {
             bytes_received: packet.len() as u64,
             bytes_sent: response_bytes.len() as u64,
         };
+        self.events.push(ExpiryEvent {
+            expiry: new_auth_peer.expiry(),
+            public_key: initiation.static_public,
+            session_index: new_auth_peer.session.sender_index(),
+        });
         match self.auth_peers.entry(initiation.static_public) {
             Entry::Vacant(v) => {
                 v.insert(new_auth_peer);
@@ -450,36 +460,35 @@ impl WireguardRelay {
     }
 
     pub(crate) fn advance(&mut self, now: SystemTime) {
-        self.auth_peers.retain(|public_key, peer| {
-            let expired = peer.expired(now);
-            if expired {
+        while let Some(event) = self.events.peek() {
+            if event.expiry > now {
+                break;
+            }
+            let event = match self.events.pop() {
+                Some(event) => event,
+                None => continue,
+            };
+            if let Some(auth_peer) = self.auth_peers.get(&event.public_key) {
+                if event.session_index != auth_peer.session.sender_index() {
+                    // ignore old sessions
+                    continue;
+                }
+            }
+            if let Some(peer) = self.auth_peers.remove(&event.public_key) {
                 self.sessions
                     .remove(&(peer.socket_addr, peer.session.sender_index().as_u32()));
                 self.socket_addr_to_public_key.remove(&peer.socket_addr);
-                if let Some(spokes) = self.hub_to_spokes.remove(public_key) {
+                if let Some(spokes) = self.hub_to_spokes.remove(&event.public_key) {
                     for spoke in spokes.into_iter() {
                         self.spoke_to_hub.remove(&spoke);
                     }
                 }
             }
-            !expired
-        });
+        }
     }
 
     pub(crate) fn next_event_time(&self) -> Option<SystemTime> {
-        let mut min_time: Option<SystemTime> = None;
-        for (_, peer) in self.auth_peers.iter() {
-            let expiry = peer.expiry();
-            match min_time.as_mut() {
-                Some(min_time) => {
-                    if expiry < *min_time {
-                        *min_time = expiry;
-                    }
-                }
-                None => min_time = Some(expiry),
-            }
-        }
-        min_time
+        self.events.peek().map(|event| event.expiry)
     }
 }
 
@@ -495,12 +504,6 @@ impl AuthPeer {
     fn expiry(&self) -> SystemTime {
         self.created_at + SESSION_TIMEOUT
     }
-
-    fn expired(&self, now: SystemTime) -> bool {
-        now.duration_since(self.created_at)
-            .unwrap_or(Duration::ZERO)
-            > SESSION_TIMEOUT
-    }
 }
 
 impl From<&AuthPeer> for wgx::AuthPeer {
@@ -511,6 +514,34 @@ impl From<&AuthPeer> for wgx::AuthPeer {
             bytes_received: other.bytes_received,
             bytes_sent: other.bytes_sent,
         }
+    }
+}
+
+struct ExpiryEvent {
+    expiry: SystemTime,
+    public_key: PublicKey,
+    session_index: SessionIndex,
+}
+
+impl PartialEq for ExpiryEvent {
+    fn eq(&self, other: &Self) -> bool {
+        // inverse
+        other.expiry.eq(&self.expiry)
+    }
+}
+
+impl Eq for ExpiryEvent {}
+
+impl PartialOrd for ExpiryEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ExpiryEvent {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // inverse
+        other.expiry.cmp(&self.expiry)
     }
 }
 
