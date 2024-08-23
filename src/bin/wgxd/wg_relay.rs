@@ -6,6 +6,8 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::time::SystemTime;
 
+use log::error;
+use log::trace;
 use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
 use wgproto::DecodeWithContext;
@@ -77,12 +79,22 @@ impl WireguardRelay {
     }
 
     pub(crate) fn on_event(&mut self) -> Result<(), Error> {
-        let (n, from) = self.socket.recv_from(&mut self.buffer)?;
-        let buffer = take(&mut self.buffer);
-        let packet = &buffer[..n];
-        let ret = self.on_packet(packet, from);
-        self.buffer = buffer;
-        ret
+        loop {
+            let (n, from) = match self.socket.recv_from(&mut self.buffer) {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // no more packets
+                    return Ok(());
+                }
+                other => other,
+            }?;
+            let buffer = take(&mut self.buffer);
+            let packet = &buffer[..n];
+            let ret = self.on_packet(packet, from);
+            self.buffer = buffer;
+            if let Err(e) = ret {
+                error!("wg-relay error: {}", e);
+            }
+        }
     }
 
     fn on_packet(&mut self, packet: &[u8], from: SocketAddr) -> Result<(), Error> {
@@ -130,13 +142,13 @@ impl WireguardRelay {
                 ));
             }
         }
-        eprintln!(
+        trace!(
             "{}->wgx auth-peer->wgx {:?}",
             from,
             MessageKind::HandshakeInitiation
         );
         self.socket.send_to(response_bytes.as_slice(), from)?;
-        eprintln!(
+        trace!(
             "wgx->{} wgx->auth-peer {:?}",
             from,
             MessageKind::HandshakeResponse
@@ -200,7 +212,7 @@ impl WireguardRelay {
                 )
             })?
             .socket_addr;
-        eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
+        trace!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
         self.socket.send_to(packet, to_socket_addr)?;
         // sender and receiver are flipped here
         self.session_to_destination.insert(
@@ -266,7 +278,7 @@ impl WireguardRelay {
         if let Some(peer) = self.auth_peers.get_mut(&to_public_key) {
             peer.bytes_sent += nbytes;
         }
-        eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
+        trace!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
         Ok(())
     }
 
@@ -332,7 +344,7 @@ impl WireguardRelay {
             if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
                 peer.bytes_received += nbytes;
             }
-            eprintln!(
+            trace!(
                 "{}->local {}->wgx {:?}({})",
                 from,
                 from_kind,
@@ -355,7 +367,7 @@ impl WireguardRelay {
             if let Some(peer) = self.auth_peers.get_mut(to_public_key) {
                 peer.bytes_sent += nbytes;
             }
-            eprintln!(
+            trace!(
                 "{}->{} {}->{} {:?}({})",
                 from,
                 to_socket_addr,

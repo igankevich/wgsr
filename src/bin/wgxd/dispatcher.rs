@@ -1,3 +1,4 @@
+use log::error;
 use mio::Events;
 use mio::Poll;
 use mio::Token;
@@ -72,7 +73,7 @@ impl Dispatcher {
                     Token(i) => Err(format_error!("unknown event {}", i)),
                 };
                 if let Err(e) = ret {
-                    eprintln!("{}", e);
+                    error!("dispatcher error: {}", e);
                 }
             }
         }
@@ -81,14 +82,11 @@ impl Dispatcher {
 
 const MAX_EVENTS: usize = 1024;
 const WAKE_TOKEN: Token = Token(usize::MAX);
-const UDP_SERVER_TOKEN: Token = Token(usize::MAX - 1);
-const UNIX_SERVER_TOKEN: Token = Token(usize::MAX - 2);
+const UDP_SERVER_TOKEN: Token = Token(1);
+const UNIX_SERVER_TOKEN: Token = Token(2);
 const MAX_UNIX_CLIENTS: usize = 1000;
-const UNIX_TOKEN_MAX: usize = usize::MAX - 3;
-const UNIX_TOKEN_MIN: usize = UNIX_TOKEN_MAX + 1 - MAX_UNIX_CLIENTS;
+const UNIX_TOKEN_MIN: usize = 1000;
+const UNIX_TOKEN_MAX: usize = UNIX_TOKEN_MIN + MAX_UNIX_CLIENTS - 1;
 
 const_assert!(UNIX_TOKEN_MIN <= UNIX_TOKEN_MAX);
-const_assert!(UNIX_TOKEN_MAX < UNIX_SERVER_TOKEN.0);
-const_assert!(UDP_SERVER_TOKEN.0 < WAKE_TOKEN.0);
-const_assert!(UNIX_SERVER_TOKEN.0 < UDP_SERVER_TOKEN.0);
 const_assert!(MAX_UNIX_CLIENTS == UNIX_TOKEN_MAX - UNIX_TOKEN_MIN + 1);

@@ -6,6 +6,7 @@ use std::num::NonZeroU16;
 use std::path::Path;
 use std::path::PathBuf;
 
+use log::Level;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgx::AllowedPublicKeys;
@@ -25,6 +26,7 @@ pub(crate) struct Config {
     pub(crate) listen_port: NonZeroU16,
     pub(crate) allowed_public_keys: AllowedPublicKeys,
     pub(crate) unix_socket_path: PathBuf,
+    pub(crate) log_level: Level,
 }
 
 impl Config {
@@ -54,6 +56,7 @@ impl Config {
                         config.allowed_public_keys = value.parse().map_err(Error::other)?;
                     }
                     "UnixSocketPath" => config.unix_socket_path = value.into(),
+                    "LogLevel" => config.log_level = value.parse().map_err(Error::other)?,
                     key => return Err(format_error!("unknown key under `{}`: `{}`", section, key)),
                 },
                 Some(other) => return Err(format_error!("unknown section: {}", other)),
@@ -103,6 +106,7 @@ impl Default for Config {
             listen_port: unsafe { NonZeroU16::new_unchecked(DEFAULT_LISTEN_PORT) },
             allowed_public_keys: AllowedPublicKeys::Set(Default::default()),
             unix_socket_path: DEFAULT_UNIX_SOCKET_PATH.into(),
+            log_level: Level::Info,
         }
     }
 }
@@ -114,6 +118,7 @@ impl Display for Config {
         writeln!(f, "PrivateKey = {}", self.private_key.to_base64())?;
         writeln!(f, "AllowedPublicKeys = {}", self.allowed_public_keys)?;
         writeln!(f, "UnixSocketPath = {}", self.unix_socket_path.display())?;
+        writeln!(f, "LogLevel = {}", self.log_level)?;
         Ok(())
     }
 }
@@ -157,6 +162,13 @@ mod tests {
                 listen_port: u.arbitrary()?,
                 allowed_public_keys: u.arbitrary::<ArbitraryAllowedPublicKeys>()?.0,
                 unix_socket_path: arbitrary_path(u)?,
+                log_level: *u.choose(&[
+                    Level::Error,
+                    Level::Warn,
+                    Level::Info,
+                    Level::Debug,
+                    Level::Trace,
+                ])?,
             })
         }
     }
