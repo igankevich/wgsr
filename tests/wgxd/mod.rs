@@ -36,6 +36,7 @@ impl Wgxd {
             listen_port,
         )
         .unwrap();
+        writeln!(&mut config, "LogLevel = TRACE").unwrap();
         std::fs::write(config_file.as_path(), config).unwrap();
         let child = get_test_bin("wgxd")
             .args([config_file.as_path()])

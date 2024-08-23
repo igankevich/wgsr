@@ -106,6 +106,8 @@ impl UnixServer {
                 let response = match request {
                     UnixRequest::Running => UnixResponse::Running,
                     UnixRequest::Status => UnixResponse::Status(Ok(wg_relay.status()?)),
+                    UnixRequest::Routes => UnixResponse::Routes(Ok(wg_relay.routes()?)),
+                    UnixRequest::Sessions => UnixResponse::Sessions(Ok(wg_relay.sessions()?)),
                     UnixRequest::PublicKey => UnixResponse::PublicKey(Ok(*wg_relay.public_key())),
                     UnixRequest::Export => {
                         let response = wg_relay.export_config().map_err(UnixRequestError::map);

@@ -36,6 +36,8 @@ const MAX_SIZE: usize = const_max(MAX_RESPONSE_SIZE, MAX_REQUEST_SIZE);
 pub enum UnixRequest {
     Running,
     Status,
+    Routes,
+    Sessions,
     PublicKey,
     Export,
 }
@@ -45,6 +47,8 @@ pub enum UnixRequest {
 pub enum UnixResponse {
     Running,
     Status(Result<Status, UnixRequestError>),
+    Routes(Result<Routes, UnixRequestError>),
+    Sessions(Result<Sessions, UnixRequestError>),
     PublicKey(#[bincode(with_serde)] Result<PublicKey, UnixRequestError>),
     Export(Result<String, UnixRequestError>),
 }
@@ -59,10 +63,20 @@ pub struct Status {
     pub allowed_public_keys: AllowedPublicKeys,
     #[bincode(with_serde)]
     pub auth_peers: HashMap<PublicKey, AuthPeer>,
-    #[bincode(with_serde)]
-    pub session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
+}
+
+#[derive(Decode, Encode)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+pub struct Routes {
     #[bincode(with_serde)]
     pub hub_to_spokes: HashMap<PublicKey, HashSet<PublicKey>>,
+}
+
+#[derive(Decode, Encode)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+pub struct Sessions {
+    #[bincode(with_serde)]
+    pub sessions: HashMap<(SocketAddr, u32), PublicKey>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -325,15 +339,29 @@ mod tests {
                     .into_iter()
                     .map(|(k, v)| (k.into(), v))
                     .collect(),
-                session_to_destination: u
-                    .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
-                    .into_iter()
-                    .map(|((k0, k1), v)| ((k0.0, k1), v.into()))
-                    .collect(),
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for Routes {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
                 hub_to_spokes: u
                     .arbitrary::<HashMap<[u8; 32], HashSet<[u8; 32]>>>()?
                     .into_iter()
                     .map(|(k, v)| (k.into(), v.into_iter().map(Into::into).collect()))
+                    .collect(),
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for Sessions {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                sessions: u
+                    .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
+                    .into_iter()
+                    .map(|((k0, k1), v)| ((k0.0, k1), v.into()))
                     .collect(),
             })
         }

@@ -1,11 +1,16 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem::take;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::time::Duration;
 use std::time::SystemTime;
 
+use log::error;
+use log::trace;
 use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
 use wgproto::DecodeWithContext;
@@ -24,13 +29,16 @@ use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
+use wgproto::SessionIndex;
 use wgx::AllowedPublicKeys;
+use wgx::Routes;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
 use wgx::RpcRequest;
 use wgx::RpcRequestBody;
 use wgx::RpcResponse;
 use wgx::RpcResponseBody;
+use wgx::Sessions;
 use wgx::Status;
 use wgx::ToBase64;
 
@@ -51,7 +59,8 @@ pub(crate) struct WireguardRelay {
     socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
     // (sender-socket-address, receiver-index) -> receiver-public-key
     // (receiver-socket-address, sender-index) -> sender-public-key
-    session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
+    sessions: HashMap<(SocketAddr, u32), PublicKey>,
+    events: BinaryHeap<ExpiryEvent>,
     buffer: Vec<u8>,
 }
 
@@ -71,25 +80,36 @@ impl WireguardRelay {
             spoke_to_hub: Default::default(),
             allowed_public_keys: config.allowed_public_keys,
             socket_addr_to_public_key: Default::default(),
-            session_to_destination: Default::default(),
+            sessions: Default::default(),
+            events: Default::default(),
             buffer: vec![0_u8; MAX_PACKET_SIZE],
         })
     }
 
     pub(crate) fn on_event(&mut self) -> Result<(), Error> {
-        let (n, from) = self.socket.recv_from(&mut self.buffer)?;
-        let buffer = take(&mut self.buffer);
-        let packet = &buffer[..n];
-        let ret = self.on_packet(packet, from);
-        self.buffer = buffer;
-        ret
+        loop {
+            let (n, from) = match self.socket.recv_from(&mut self.buffer) {
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // no more packets
+                    return Ok(());
+                }
+                other => other,
+            }?;
+            let buffer = take(&mut self.buffer);
+            let packet = &buffer[..n];
+            let ret = self.on_packet(packet, from);
+            self.buffer = buffer;
+            if let Err(e) = ret {
+                error!("wg-relay error: {}", e);
+            }
+        }
     }
 
     fn on_packet(&mut self, packet: &[u8], from: SocketAddr) -> Result<(), Error> {
         let mut buffer = InputBuffer::new(packet);
         let mut context = MacVerifier::new(&self.public_key, None);
         context.check_macs = false;
-        if buffer.get(0) == Some(&50) {
+        if buffer.get(0) == Some(&(MessageKindExt::GetPublicKey as u8)) {
             self.socket.send_to(self.public_key.as_bytes(), from)?;
             return Ok(());
         }
@@ -130,13 +150,13 @@ impl WireguardRelay {
                 ));
             }
         }
-        eprintln!(
+        trace!(
             "{}->wgx auth-peer->wgx {:?}",
             from,
             MessageKind::HandshakeInitiation
         );
         self.socket.send_to(response_bytes.as_slice(), from)?;
-        eprintln!(
+        trace!(
             "wgx->{} wgx->auth-peer {:?}",
             from,
             MessageKind::HandshakeResponse
@@ -144,7 +164,7 @@ impl WireguardRelay {
         self.socket_addr_to_public_key
             .insert(from, initiation.static_public);
         // sender and receiver are flipped here
-        self.session_to_destination
+        self.sessions
             .insert((from, session.sender_index().as_u32()), self.public_key);
         use std::collections::hash_map::Entry;
         let new_auth_peer = AuthPeer {
@@ -154,11 +174,19 @@ impl WireguardRelay {
             bytes_received: packet.len() as u64,
             bytes_sent: response_bytes.len() as u64,
         };
+        self.events.push(ExpiryEvent {
+            expiry: new_auth_peer.expiry(),
+            public_key: initiation.static_public,
+            session_index: new_auth_peer.session.sender_index(),
+        });
         match self.auth_peers.entry(initiation.static_public) {
             Entry::Vacant(v) => {
                 v.insert(new_auth_peer);
             }
             Entry::Occupied(mut o) => {
+                let old_from = o.get().socket_addr;
+                self.sessions
+                    .remove(&(old_from, o.get().session.sender_index().as_u32()));
                 let mut new_auth_peer = new_auth_peer;
                 new_auth_peer.bytes_received = o.get().bytes_received;
                 new_auth_peer.bytes_sent = o.get().bytes_sent;
@@ -200,10 +228,10 @@ impl WireguardRelay {
                 )
             })?
             .socket_addr;
-        eprintln!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
+        trace!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
         self.socket.send_to(packet, to_socket_addr)?;
         // sender and receiver are flipped here
-        self.session_to_destination.insert(
+        self.sessions.insert(
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
@@ -235,7 +263,7 @@ impl WireguardRelay {
             ));
         }
         let to_public_key = *self
-            .session_to_destination
+            .sessions
             .get(&(from, message.receiver_index.as_u32()))
             .ok_or_else(|| {
                 format_error!(
@@ -253,9 +281,9 @@ impl WireguardRelay {
             })?
             .socket_addr;
         self.socket.send_to(packet, to_socket_addr)?;
-        self.session_to_destination
+        self.sessions
             .insert((from, message.receiver_index.as_u32()), to_public_key);
-        self.session_to_destination.insert(
+        self.sessions.insert(
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
@@ -266,7 +294,7 @@ impl WireguardRelay {
         if let Some(peer) = self.auth_peers.get_mut(&to_public_key) {
             peer.bytes_sent += nbytes;
         }
-        eprintln!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
+        trace!("{}->{} hub->spoke {:?}", from, to_socket_addr, kind);
         Ok(())
     }
 
@@ -287,7 +315,7 @@ impl WireguardRelay {
             ("spoke", "hub")
         };
         let to_public_key = self
-            .session_to_destination
+            .sessions
             .get(&(from, message.receiver_index.as_u32()))
             .ok_or_else(|| {
                 format_error!(
@@ -306,10 +334,12 @@ impl WireguardRelay {
                 })?
                 .session;
             let data = session.receive(&message)?;
-            if !data.is_empty() {
-                let request = RpcRequest::decode(&data)?;
+            if data.len() >= IP_HEADER_LEN + UDP_HEADER_LEN {
+                let request = RpcRequest::decode(&data[(IP_HEADER_LEN + UDP_HEADER_LEN)..])?;
                 match request.body {
-                    RpcRequestBody::SetPeers(public_keys) => {
+                    RpcRequestBody::SetPeers(mut public_keys) => {
+                        // exclude relay's public key from routing
+                        public_keys.remove(&self.public_key);
                         for public_key in public_keys.iter() {
                             self.spoke_to_hub.insert(*public_key, *from_public_key);
                         }
@@ -332,7 +362,7 @@ impl WireguardRelay {
             if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
                 peer.bytes_received += nbytes;
             }
-            eprintln!(
+            trace!(
                 "{}->local {}->wgx {:?}({})",
                 from,
                 from_kind,
@@ -355,7 +385,7 @@ impl WireguardRelay {
             if let Some(peer) = self.auth_peers.get_mut(to_public_key) {
                 peer.bytes_sent += nbytes;
             }
-            eprintln!(
+            trace!(
                 "{}->{} {}->{} {:?}({})",
                 from,
                 to_socket_addr,
@@ -378,8 +408,18 @@ impl WireguardRelay {
                 .iter()
                 .map(|(k, v)| (*k, v.into()))
                 .collect(),
-            session_to_destination: self.session_to_destination.clone(),
+        })
+    }
+
+    pub(crate) fn routes(&self) -> Result<Routes, Error> {
+        Ok(Routes {
             hub_to_spokes: self.hub_to_spokes.clone(),
+        })
+    }
+
+    pub(crate) fn sessions(&self) -> Result<Sessions, Error> {
+        Ok(Sessions {
+            sessions: self.sessions.clone(),
         })
     }
 
@@ -419,31 +459,36 @@ impl WireguardRelay {
         &self.public_key
     }
 
-    pub(crate) fn dump(&self) {
-        for (public_key, peer) in self.auth_peers.iter() {
-            eprintln!(
-                "auth-peer {} {} {}->{}",
-                public_key.to_base64(),
-                peer.socket_addr,
-                peer.session.sender_index(),
-                peer.session.receiver_index()
-            );
-        }
-        for (hub, spokes) in self.hub_to_spokes.iter() {
-            for spoke in spokes.iter() {
-                eprintln!("edge {} {}", hub.to_base64(), spoke.to_base64());
+    pub(crate) fn advance(&mut self, now: SystemTime) {
+        while let Some(event) = self.events.peek() {
+            if event.expiry > now {
+                break;
+            }
+            let event = match self.events.pop() {
+                Some(event) => event,
+                None => continue,
+            };
+            if let Some(auth_peer) = self.auth_peers.get(&event.public_key) {
+                if event.session_index != auth_peer.session.sender_index() {
+                    // ignore old sessions
+                    continue;
+                }
+            }
+            if let Some(peer) = self.auth_peers.remove(&event.public_key) {
+                self.sessions
+                    .remove(&(peer.socket_addr, peer.session.sender_index().as_u32()));
+                self.socket_addr_to_public_key.remove(&peer.socket_addr);
+                if let Some(spokes) = self.hub_to_spokes.remove(&event.public_key) {
+                    for spoke in spokes.into_iter() {
+                        self.spoke_to_hub.remove(&spoke);
+                    }
+                }
             }
         }
-        for ((sender_socket_addr, receiver_index), receiver_public_key) in
-            self.session_to_destination.iter()
-        {
-            eprintln!(
-                "route {} {} -> {}",
-                sender_socket_addr,
-                receiver_index,
-                receiver_public_key.to_base64()
-            );
-        }
+    }
+
+    pub(crate) fn next_event_time(&self) -> Option<SystemTime> {
+        self.events.peek().map(|event| event.expiry)
     }
 }
 
@@ -453,6 +498,12 @@ struct AuthPeer {
     created_at: SystemTime,
     bytes_received: u64,
     bytes_sent: u64,
+}
+
+impl AuthPeer {
+    fn expiry(&self) -> SystemTime {
+        self.created_at + SESSION_TIMEOUT
+    }
 }
 
 impl From<&AuthPeer> for wgx::AuthPeer {
@@ -466,4 +517,41 @@ impl From<&AuthPeer> for wgx::AuthPeer {
     }
 }
 
+struct ExpiryEvent {
+    expiry: SystemTime,
+    public_key: PublicKey,
+    session_index: SessionIndex,
+}
+
+impl PartialEq for ExpiryEvent {
+    fn eq(&self, other: &Self) -> bool {
+        // inverse
+        other.expiry.eq(&self.expiry)
+    }
+}
+
+impl Eq for ExpiryEvent {}
+
+impl PartialOrd for ExpiryEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ExpiryEvent {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // inverse
+        other.expiry.cmp(&self.expiry)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum MessageKindExt {
+    GetPublicKey = 49,
+}
+
 const MAX_PACKET_SIZE: usize = 65535;
+const IP_HEADER_LEN: usize = 20;
+const UDP_HEADER_LEN: usize = 8;
+const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
