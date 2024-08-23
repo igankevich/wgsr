@@ -1,3 +1,6 @@
+use std::time::Duration;
+use std::time::SystemTime;
+
 use log::error;
 use mio::Events;
 use mio::Poll;
@@ -41,11 +44,16 @@ impl Dispatcher {
         let mut events = Events::with_capacity(MAX_EVENTS);
         loop {
             events.clear();
-            match self.poll.poll(&mut events, None) {
+            let timeout = self.wg_relay.next_event_time().map(|t| {
+                t.duration_since(SystemTime::now())
+                    .unwrap_or(Duration::ZERO)
+            });
+            match self.poll.poll(&mut events, timeout) {
                 Ok(()) => Ok(()),
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(()),
                 other => other,
             }?;
+            self.wg_relay.advance(SystemTime::now());
             for event in events.iter() {
                 let ret = match event.token() {
                     WAKE_TOKEN => return Ok(()),

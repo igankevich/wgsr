@@ -87,7 +87,8 @@ fn echo_server_one_hub_one_spoke() {
         id: 1,
         body: RpcRequestBody::SetPeers([spoke_public_key].into()),
     };
-    let buffer = request.encode_to_vec();
+    let mut buffer = request.encode_to_vec();
+    buffer.splice(0..0, vec![0_u8; 28]);
     hub.send(buffer, &wgxd_public_key).unwrap();
     hub.flush(&mut hub_socket).unwrap();
     hub.fill_buf_once(&mut hub_socket).unwrap();

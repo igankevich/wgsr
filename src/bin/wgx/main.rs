@@ -8,6 +8,8 @@ use clap::Subcommand;
 use colored::Colorize;
 use wgproto::PublicKey;
 use wgx::FromBase64;
+use wgx::Routes;
+use wgx::Sessions;
 use wgx::Status;
 use wgx::ToBase64;
 use wgx::UnixRequest;
@@ -53,6 +55,11 @@ enum Command {
     Running,
     /// Get relay status.
     Status,
+    /// Get routing table.
+    #[clap(alias = "route")]
+    Routes,
+    /// Get session table.
+    Sessions,
     /// Get relay's public key.
     PublicKey,
     /// Export peer configuration.
@@ -149,6 +156,24 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             print_status(&status);
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Routes) => {
+            let mut client = UnixClient::new(args.unix_socket_path)?;
+            let routes = match client.call(UnixRequest::Routes)? {
+                UnixResponse::Routes(routes) => routes?,
+                _ => return Ok(ExitCode::FAILURE),
+            };
+            print_routes(&routes);
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Sessions) => {
+            let mut client = UnixClient::new(args.unix_socket_path)?;
+            let sessions = match client.call(UnixRequest::Sessions)? {
+                UnixResponse::Sessions(sessions) => sessions?,
+                _ => return Ok(ExitCode::FAILURE),
+            };
+            print_sessions(&sessions);
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Command::PublicKey) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             let public_key = match client.call(UnixRequest::PublicKey)? {
@@ -203,16 +228,20 @@ fn print_status(status: &Status) {
         );
         println!();
     }
-    for (hub, spokes) in status.hub_to_spokes.iter() {
+}
+
+fn print_routes(routes: &Routes) {
+    for (hub, spokes) in routes.hub_to_spokes.iter() {
         for spoke in spokes.iter() {
             println!("edge {} {}", hub.to_base64(), spoke.to_base64());
         }
     }
-    for ((sender_socket_addr, receiver_index), receiver_public_key) in
-        status.session_to_destination.iter()
-    {
+}
+
+fn print_sessions(sessions: &Sessions) {
+    for ((sender_socket_addr, receiver_index), receiver_public_key) in sessions.sessions.iter() {
         println!(
-            "route {} {} -> {}",
+            "{} -> {} {}",
             sender_socket_addr,
             receiver_index,
             receiver_public_key.to_base64()

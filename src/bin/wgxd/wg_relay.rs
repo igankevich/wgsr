@@ -4,6 +4,7 @@ use std::mem::take;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::time::Duration;
 use std::time::SystemTime;
 
 use log::error;
@@ -27,12 +28,14 @@ use wgproto::PublicKey;
 use wgproto::Responder;
 use wgproto::Session;
 use wgx::AllowedPublicKeys;
+use wgx::Routes;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
 use wgx::RpcRequest;
 use wgx::RpcRequestBody;
 use wgx::RpcResponse;
 use wgx::RpcResponseBody;
+use wgx::Sessions;
 use wgx::Status;
 use wgx::ToBase64;
 
@@ -53,7 +56,7 @@ pub(crate) struct WireguardRelay {
     socket_addr_to_public_key: HashMap<SocketAddr, PublicKey>,
     // (sender-socket-address, receiver-index) -> receiver-public-key
     // (receiver-socket-address, sender-index) -> sender-public-key
-    session_to_destination: HashMap<(SocketAddr, u32), PublicKey>,
+    sessions: HashMap<(SocketAddr, u32), PublicKey>,
     buffer: Vec<u8>,
 }
 
@@ -73,7 +76,7 @@ impl WireguardRelay {
             spoke_to_hub: Default::default(),
             allowed_public_keys: config.allowed_public_keys,
             socket_addr_to_public_key: Default::default(),
-            session_to_destination: Default::default(),
+            sessions: Default::default(),
             buffer: vec![0_u8; MAX_PACKET_SIZE],
         })
     }
@@ -156,7 +159,7 @@ impl WireguardRelay {
         self.socket_addr_to_public_key
             .insert(from, initiation.static_public);
         // sender and receiver are flipped here
-        self.session_to_destination
+        self.sessions
             .insert((from, session.sender_index().as_u32()), self.public_key);
         use std::collections::hash_map::Entry;
         let new_auth_peer = AuthPeer {
@@ -171,6 +174,9 @@ impl WireguardRelay {
                 v.insert(new_auth_peer);
             }
             Entry::Occupied(mut o) => {
+                let old_from = o.get().socket_addr;
+                self.sessions
+                    .remove(&(old_from, o.get().session.sender_index().as_u32()));
                 let mut new_auth_peer = new_auth_peer;
                 new_auth_peer.bytes_received = o.get().bytes_received;
                 new_auth_peer.bytes_sent = o.get().bytes_sent;
@@ -215,7 +221,7 @@ impl WireguardRelay {
         trace!("{}->{} spoke->hub {:?}", from, to_socket_addr, kind);
         self.socket.send_to(packet, to_socket_addr)?;
         // sender and receiver are flipped here
-        self.session_to_destination.insert(
+        self.sessions.insert(
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
@@ -247,7 +253,7 @@ impl WireguardRelay {
             ));
         }
         let to_public_key = *self
-            .session_to_destination
+            .sessions
             .get(&(from, message.receiver_index.as_u32()))
             .ok_or_else(|| {
                 format_error!(
@@ -265,9 +271,9 @@ impl WireguardRelay {
             })?
             .socket_addr;
         self.socket.send_to(packet, to_socket_addr)?;
-        self.session_to_destination
+        self.sessions
             .insert((from, message.receiver_index.as_u32()), to_public_key);
-        self.session_to_destination.insert(
+        self.sessions.insert(
             (to_socket_addr, message.sender_index.as_u32()),
             *from_public_key,
         );
@@ -299,7 +305,7 @@ impl WireguardRelay {
             ("spoke", "hub")
         };
         let to_public_key = self
-            .session_to_destination
+            .sessions
             .get(&(from, message.receiver_index.as_u32()))
             .ok_or_else(|| {
                 format_error!(
@@ -392,8 +398,18 @@ impl WireguardRelay {
                 .iter()
                 .map(|(k, v)| (*k, v.into()))
                 .collect(),
-            session_to_destination: self.session_to_destination.clone(),
+        })
+    }
+
+    pub(crate) fn routes(&self) -> Result<Routes, Error> {
+        Ok(Routes {
             hub_to_spokes: self.hub_to_spokes.clone(),
+        })
+    }
+
+    pub(crate) fn sessions(&self) -> Result<Sessions, Error> {
+        Ok(Sessions {
+            sessions: self.sessions.clone(),
         })
     }
 
@@ -432,6 +448,39 @@ impl WireguardRelay {
     pub(crate) fn public_key(&self) -> &PublicKey {
         &self.public_key
     }
+
+    pub(crate) fn advance(&mut self, now: SystemTime) {
+        self.auth_peers.retain(|public_key, peer| {
+            let expired = peer.expired(now);
+            if expired {
+                self.sessions
+                    .remove(&(peer.socket_addr, peer.session.sender_index().as_u32()));
+                self.socket_addr_to_public_key.remove(&peer.socket_addr);
+                if let Some(spokes) = self.hub_to_spokes.remove(public_key) {
+                    for spoke in spokes.into_iter() {
+                        self.spoke_to_hub.remove(&spoke);
+                    }
+                }
+            }
+            !expired
+        });
+    }
+
+    pub(crate) fn next_event_time(&self) -> Option<SystemTime> {
+        let mut min_time: Option<SystemTime> = None;
+        for (_, peer) in self.auth_peers.iter() {
+            let expiry = peer.expiry();
+            match min_time.as_mut() {
+                Some(min_time) => {
+                    if expiry < *min_time {
+                        *min_time = expiry;
+                    }
+                }
+                None => min_time = Some(expiry),
+            }
+        }
+        min_time
+    }
 }
 
 struct AuthPeer {
@@ -440,6 +489,18 @@ struct AuthPeer {
     created_at: SystemTime,
     bytes_received: u64,
     bytes_sent: u64,
+}
+
+impl AuthPeer {
+    fn expiry(&self) -> SystemTime {
+        self.created_at + SESSION_TIMEOUT
+    }
+
+    fn expired(&self, now: SystemTime) -> bool {
+        now.duration_since(self.created_at)
+            .unwrap_or(Duration::ZERO)
+            > SESSION_TIMEOUT
+    }
 }
 
 impl From<&AuthPeer> for wgx::AuthPeer {
@@ -462,3 +523,4 @@ enum MessageKindExt {
 const MAX_PACKET_SIZE: usize = 65535;
 const IP_HEADER_LEN: usize = 20;
 const UDP_HEADER_LEN: usize = 8;
+const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
