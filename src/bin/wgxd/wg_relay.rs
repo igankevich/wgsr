@@ -101,7 +101,7 @@ impl WireguardRelay {
         let mut buffer = InputBuffer::new(packet);
         let mut context = MacVerifier::new(&self.public_key, None);
         context.check_macs = false;
-        if buffer.get(0) == Some(&50) {
+        if buffer.get(0) == Some(&(MessageKindExt::GetPublicKey as u8)) {
             self.socket.send_to(self.public_key.as_bytes(), from)?;
             return Ok(());
         }
@@ -318,10 +318,12 @@ impl WireguardRelay {
                 })?
                 .session;
             let data = session.receive(&message)?;
-            if !data.is_empty() {
-                let request = RpcRequest::decode(&data)?;
+            if data.len() >= IP_HEADER_LEN + UDP_HEADER_LEN {
+                let request = RpcRequest::decode(&data[(IP_HEADER_LEN + UDP_HEADER_LEN)..])?;
                 match request.body {
-                    RpcRequestBody::SetPeers(public_keys) => {
+                    RpcRequestBody::SetPeers(mut public_keys) => {
+                        // exclude relay's public key from routing
+                        public_keys.remove(&self.public_key);
                         for public_key in public_keys.iter() {
                             self.spoke_to_hub.insert(*public_key, *from_public_key);
                         }
@@ -451,4 +453,12 @@ impl From<&AuthPeer> for wgx::AuthPeer {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum MessageKindExt {
+    GetPublicKey = 49,
+}
+
 const MAX_PACKET_SIZE: usize = 65535;
+const IP_HEADER_LEN: usize = 20;
+const UDP_HEADER_LEN: usize = 8;

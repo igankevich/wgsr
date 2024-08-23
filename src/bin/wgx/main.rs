@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 use clap::Parser;
 use clap::Subcommand;
+use colored::Colorize;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::Status;
@@ -171,21 +172,33 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 fn print_status(status: &Status) {
     let now = SystemTime::now();
-    println!("relay");
-    println!("  public key: {}", status.public_key.to_base64());
-    println!("  listening port: {}", status.listen_port);
-    println!("  allowed public keys: {}", status.allowed_public_keys);
+    println!(
+        "{} {}",
+        "relay:".green().bold(),
+        status.public_key.to_base64().green()
+    );
+    println!("  {} {}", "listening port:".bold(), status.listen_port);
+    println!(
+        "  {} {}",
+        "allowed public keys:".bold(),
+        status.allowed_public_keys
+    );
     println!();
     for (public_key, peer) in status.auth_peers.iter() {
-        println!("peer");
-        println!("  public key: {}", public_key.to_base64());
-        println!("  endpoint: {}", peer.socket_addr);
         println!(
-            "  latest handshake: {}",
+            "{} {}",
+            "peer:".yellow().bold(),
+            public_key.to_base64().yellow()
+        );
+        println!("  {} {}", "endpoint:".bold(), peer.socket_addr);
+        println!(
+            "  {} {}",
+            "latest handshake:".bold(),
             format_latest_handshake(peer.latest_handshake, "now", now)
         );
         println!(
-            "  transfer: {}",
+            "  {} {}",
+            "transfer:".bold(),
             format_transfer(peer.bytes_received, peer.bytes_sent)
         );
         println!();
