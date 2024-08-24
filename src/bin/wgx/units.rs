@@ -3,9 +3,9 @@ use std::fmt::Formatter;
 use std::time::Duration;
 
 pub(crate) struct FormatBytes {
-    unit: &'static str,
-    integer: u16, // max. value 1023
-    fraction: u8, // max. value 9
+    pub(crate) unit: &'static str,
+    pub(crate) integer: u16, // max. value 1023
+    pub(crate) fraction: u8, // max. value 9
 }
 
 impl Display for FormatBytes {
@@ -25,13 +25,13 @@ pub(crate) fn format_bytes(bytes: u64) -> FormatBytes {
     let mut n = bytes;
     while n >= 1024 {
         scale *= 1024;
-        n /= 1024;
+        n >>= 10;
         i += 1;
     }
-    let mut b = bytes % scale;
+    let mut b = bytes & (scale - 1);
     if b != 0 {
         // compute the first digit of the fractional part
-        b = b * 10_u64 / scale;
+        b = (b * 10_u64) >> (i * 10);
     }
     FormatBytes {
         unit: UNITS[i],
@@ -41,9 +41,9 @@ pub(crate) fn format_bytes(bytes: u64) -> FormatBytes {
 }
 
 pub(crate) struct FormatDuration {
-    unit: &'static str,
-    integer: u64,
-    fraction: u8, // max. value 9
+    pub(crate) unit: &'static str,
+    pub(crate) integer: u64,
+    pub(crate) fraction: u8, // max. value 9
 }
 
 impl Display for FormatDuration {
@@ -110,6 +110,8 @@ pub(crate) fn format_duration(duration: Duration) -> FormatDuration {
 
 #[cfg(test)]
 mod tests {
+    use arbtest::arbtest;
+
     use super::*;
 
     #[test]
@@ -130,6 +132,28 @@ mod tests {
         );
         assert_eq!("3.9 GiB", format_bytes(u32::MAX as u64).to_string());
         assert_eq!("15.9 ZiB", format_bytes(u64::MAX).to_string());
+    }
+
+    #[test]
+    fn test_shift_division() {
+        arbtest(|u| {
+            let number: u64 = u.arbitrary()?;
+            let expected = number / 1024;
+            let actual = number >> 10;
+            assert_eq!(expected, actual);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_shift_remainder() {
+        arbtest(|u| {
+            let number: u64 = u.arbitrary()?;
+            let expected = number % 1024;
+            let actual = number & (1024 - 1);
+            assert_eq!(expected, actual);
+            Ok(())
+        });
     }
 
     #[test]
