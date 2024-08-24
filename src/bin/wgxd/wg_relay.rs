@@ -13,6 +13,8 @@ use log::error;
 use log::trace;
 use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
+use rand::Rng;
+use rand_core::OsRng;
 use wgproto::DecodeWithContext;
 use wgproto::EncodeWithContext;
 use wgproto::EncryptedHandshakeInitiation;
@@ -31,6 +33,7 @@ use wgproto::Responder;
 use wgproto::Session;
 use wgproto::SessionIndex;
 use wgx::AllowedPublicKeys;
+use wgx::MessageKindExt;
 use wgx::Routes;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
@@ -46,6 +49,8 @@ use crate::format_error;
 use crate::get_internet_addresses;
 use crate::Config;
 use crate::Error;
+use crate::IpPacket;
+use crate::IpPacketView;
 
 pub(crate) struct WireguardRelay {
     socket: UdpSocket,
@@ -335,6 +340,12 @@ impl WireguardRelay {
                 .session;
             let data = session.receive(&message)?;
             if data.len() >= IP_HEADER_LEN + UDP_HEADER_LEN {
+                eprintln!("udp in {} {:?}", data.len(), data);
+                let ip = IpPacketView::new(&data);
+                let source = ip.source();
+                let destination = ip.destination();
+                let source_port = ip.source_port();
+                let destination_port = ip.destination_port();
                 let request = RpcRequest::decode(&data[(IP_HEADER_LEN + UDP_HEADER_LEN)..])?;
                 match request.body {
                     RpcRequestBody::SetPeers(mut public_keys) => {
@@ -350,11 +361,42 @@ impl WireguardRelay {
                         };
                         let mut response_bytes = Vec::new();
                         response.encode(&mut response_bytes);
-                        let message = session.send(&response_bytes)?;
+                        let mut ip_packet = IpPacket::new_udp(&response_bytes);
+                        ip_packet.set_id(OsRng.gen_range(0_u16..u16::MAX));
+                        ip_packet.set_ttl(64);
+                        ip_packet.set_source(destination);
+                        ip_packet.set_destination(source);
+                        ip_packet.set_source_port(destination_port);
+                        ip_packet.set_destination_port(source_port);
+                        let mut packet = ip_packet.into_udp();
+                        while packet.len() % 16 != 0 {
+                            packet.push(0);
+                        }
+                        let view = IpPacketView::new(&packet);
+                        eprintln!("source {}:{}", view.source(), view.source_port());
+                        eprintln!(
+                            "destination {}:{}",
+                            view.destination(),
+                            view.destination_port()
+                        );
+                        eprintln!("udp out {} {:?}", packet.len(), packet);
+                        let message = session.send(&packet)?;
                         let mut buffer = Vec::new();
                         let mut signer = MacSigner::new(&self.public_key, None);
                         message.encode_with_context(&mut buffer, &mut signer);
-                        self.socket.send_to(packet, from)?;
+                        /*
+                        let mut packet = IpPacket::from_raw(data.clone());
+                        packet.set_source(destination);
+                        packet.set_destination(source);
+                        packet.set_source_port(destination_port);
+                        packet.set_destination_port(source_port);
+                        let packet = packet.data;
+                        */
+                        //let ip = packet::ip::v4::Packet::new(&packet).unwrap();
+                        //eprintln!("ip out {:?}", ip);
+                        //let udp = packet::udp::Packet::new(ip.payload());
+                        //eprintln!("udp out {:?}", udp);
+                        self.socket.send_to(&buffer, from)?;
                     }
                 }
             }
@@ -543,12 +585,6 @@ impl Ord for ExpiryEvent {
         // inverse
         other.expiry.cmp(&self.expiry)
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-enum MessageKindExt {
-    GetPublicKey = 49,
 }
 
 const MAX_PACKET_SIZE: usize = 65535;
