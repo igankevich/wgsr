@@ -359,8 +359,7 @@ impl WireguardRelay {
                             request_id: request.id,
                             body: RpcResponseBody::SetPeers(Ok(())),
                         };
-                        let mut response_bytes = Vec::new();
-                        response.encode(&mut response_bytes);
+                        let response_bytes = response.encode_to_vec();
                         let mut ip_packet = IpPacket::new_udp(&response_bytes);
                         ip_packet.set_id(OsRng.gen_range(0_u16..u16::MAX));
                         ip_packet.set_ttl(64);
@@ -368,34 +367,22 @@ impl WireguardRelay {
                         ip_packet.set_destination(source);
                         ip_packet.set_source_port(destination_port);
                         ip_packet.set_destination_port(source_port);
-                        let mut packet = ip_packet.into_udp();
-                        while packet.len() % 16 != 0 {
-                            packet.push(0);
+                        let mut ip_packet = ip_packet.into_udp();
+                        while ip_packet.len() % 16 != 0 {
+                            ip_packet.push(0);
                         }
-                        let view = IpPacketView::new(&packet);
+                        let view = IpPacketView::new(&ip_packet);
                         eprintln!("source {}:{}", view.source(), view.source_port());
                         eprintln!(
                             "destination {}:{}",
                             view.destination(),
                             view.destination_port()
                         );
-                        eprintln!("udp out {} {:?}", packet.len(), packet);
-                        let message = session.send(&packet)?;
+                        eprintln!("udp out {} {:?}", ip_packet.len(), ip_packet);
+                        let message = session.send(&ip_packet)?;
                         let mut buffer = Vec::new();
                         let mut signer = MacSigner::new(&self.public_key, None);
                         message.encode_with_context(&mut buffer, &mut signer);
-                        /*
-                        let mut packet = IpPacket::from_raw(data.clone());
-                        packet.set_source(destination);
-                        packet.set_destination(source);
-                        packet.set_source_port(destination_port);
-                        packet.set_destination_port(source_port);
-                        let packet = packet.data;
-                        */
-                        //let ip = packet::ip::v4::Packet::new(&packet).unwrap();
-                        //eprintln!("ip out {:?}", ip);
-                        //let udp = packet::udp::Packet::new(ip.payload());
-                        //eprintln!("udp out {:?}", udp);
                         self.socket.send_to(&buffer, from)?;
                     }
                 }

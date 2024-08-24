@@ -19,7 +19,7 @@ rand = { version = "0.8.5", features = [], default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
 serde = "1.0.208"
 static_assertions = { version = "1.1.0", features = [], default-features = false }
-wgproto = { version = "0.4.0", git = "https://github.com/igankevich/wgproto", tag = "0.4.0" }
+wgproto = { version = "0.4.1", tag = "0.4.1", git = "https://github.com/igankevich/wgproto" }
 x25519-dalek = { version = "2.0.1", features = ["serde"] }
 
 [dev-dependencies]

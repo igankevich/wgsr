@@ -182,7 +182,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 UnixResponse::PublicKey(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
-            print!("{}", public_key.to_base64());
+            println!("{}", public_key.to_base64());
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Export) => {
