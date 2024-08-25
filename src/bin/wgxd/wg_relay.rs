@@ -65,6 +65,7 @@ pub(crate) struct WireguardRelay {
     // (sender-socket-address, receiver-index) -> receiver-public-key
     // (receiver-socket-address, sender-index) -> sender-public-key
     sessions: HashMap<(SocketAddr, u32), PublicKey>,
+    other_sessions: HashMap<(PublicKey, PublicKey), RegularSession>,
     events: BinaryHeap<ExpiryEvent>,
     buffer: Vec<u8>,
 }
@@ -86,6 +87,7 @@ impl WireguardRelay {
             allowed_public_keys: config.allowed_public_keys,
             socket_addr_to_public_key: Default::default(),
             sessions: Default::default(),
+            other_sessions: Default::default(),
             events: Default::default(),
             buffer: vec![0_u8; MAX_PACKET_SIZE],
         })
@@ -241,6 +243,10 @@ impl WireguardRelay {
             *from_public_key,
         );
         let nbytes = packet.len() as u64;
+        self.other_sessions
+            .entry((*from_public_key, *to_public_key))
+            .or_default()
+            .bytes_sent += nbytes;
         if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
             peer.bytes_received += nbytes;
         }
@@ -293,6 +299,12 @@ impl WireguardRelay {
             *from_public_key,
         );
         let nbytes = packet.len() as u64;
+        let regular_session = self
+            .other_sessions
+            .entry((to_public_key, *from_public_key))
+            .or_default();
+        regular_session.bytes_received += nbytes;
+        regular_session.latest_handshake = Some(SystemTime::now());
         if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
             peer.bytes_received += nbytes;
         }
@@ -448,7 +460,11 @@ impl WireguardRelay {
 
     pub(crate) fn sessions(&self) -> Result<Sessions, Error> {
         Ok(Sessions {
-            sessions: self.sessions.clone(),
+            sessions: self
+                .other_sessions
+                .iter()
+                .map(|(k, v)| (*k, v.into()))
+                .collect(),
         })
     }
 
@@ -509,7 +525,9 @@ impl WireguardRelay {
                 self.socket_addr_to_public_key.remove(&peer.socket_addr);
                 if let Some(spokes) = self.hub_to_spokes.remove(&event.public_key) {
                     for spoke in spokes.into_iter() {
-                        self.spoke_to_hub.remove(&spoke);
+                        if let Some(hub) = self.spoke_to_hub.remove(&spoke) {
+                            self.other_sessions.remove(&(spoke, hub));
+                        }
                     }
                 }
             }
@@ -540,6 +558,23 @@ impl From<&AuthPeer> for wgx::AuthPeer {
         Self {
             socket_addr: other.socket_addr,
             latest_handshake: other.created_at,
+            bytes_received: other.bytes_received,
+            bytes_sent: other.bytes_sent,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RegularSession {
+    latest_handshake: Option<SystemTime>,
+    bytes_received: u64,
+    bytes_sent: u64,
+}
+
+impl From<&RegularSession> for wgx::SessionStats {
+    fn from(other: &RegularSession) -> Self {
+        Self {
+            latest_handshake: other.latest_handshake,
             bytes_received: other.bytes_received,
             bytes_sent: other.bytes_sent,
         }

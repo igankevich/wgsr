@@ -241,13 +241,33 @@ fn print_routes(routes: &Routes) {
 }
 
 fn print_sessions(sessions: &Sessions) {
-    for ((sender_socket_addr, receiver_index), receiver_public_key) in sessions.sessions.iter() {
+    let now = SystemTime::now();
+    for ((spoke_public_key, hub_public_key), session) in sessions.sessions.iter() {
+        println!("{}", "session:".green().bold());
         println!(
-            "{} -> {} {}",
-            sender_socket_addr,
-            receiver_index,
-            receiver_public_key.to_base64()
+            "  {} {}",
+            "spoke public key:".bold(),
+            spoke_public_key.to_base64()
         );
+        println!(
+            "  {} {}",
+            "hub public key:".bold(),
+            hub_public_key.to_base64()
+        );
+        println!(
+            "  {} {}",
+            "latest handshake:".bold(),
+            match session.latest_handshake {
+                Some(t) => format_latest_handshake(t, "now", now),
+                None => "never".into(),
+            }
+        );
+        println!(
+            "  {} {}",
+            "transfer:".bold(),
+            format_transfer(session.bytes_received, session.bytes_sent)
+        );
+        println!();
     }
 }
 
