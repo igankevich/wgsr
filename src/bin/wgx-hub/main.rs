@@ -1,28 +1,20 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::net::UdpSocket;
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::Duration;
 
 use clap::Parser;
 use clap::Subcommand;
-use rand_core::OsRng;
-use rand_core::RngCore;
 use wgproto::PublicKey;
 use wgx::FromBase64;
-use wgx::MessageKindExt;
-use wgx::RpcDecode;
-use wgx::RpcEncode;
-use wgx::RpcRequest;
-use wgx::RpcRequestBody;
-use wgx::RpcResponse;
-use wgx::RpcResponseBody;
 use wgx::ToBase64;
 use wgx::DEFAULT_LISTEN_PORT;
+
+use self::wgx_client::*;
+
+mod wgx_client;
 
 #[derive(Parser)]
 #[command(
@@ -83,19 +75,10 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             let endpoint = endpoint
                 .to_socket_addr(DEFAULT_LISTEN_PORT)?
                 .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
-            for i in 1..=UDP_NUM_RETRIES {
-                let public_key = match get_public_key(endpoint) {
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        eprintln!("retrying... attempt {}/{}", i, UDP_NUM_RETRIES);
-                        continue;
-                    }
-                    other => other,
-                }?;
-                println!("{}", public_key.to_base64());
-                return Ok(ExitCode::SUCCESS);
-            }
-            eprintln!("max. no. of retries reached");
-            Ok(ExitCode::FAILURE)
+            let mut client = WgxClient::new(endpoint)?;
+            let public_key = client.retry(|client| client.get_public_key())?;
+            println!("{}", public_key.to_base64());
+            Ok(ExitCode::SUCCESS)
         }
         Some(Command::SetPeers {
             relay_socket_addr,
@@ -106,48 +89,12 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 .map(|x| FromBase64::from_base64(&x))
                 .collect::<Result<HashSet<PublicKey>, _>>()
                 .map_err(|_| "invalid public key format")?;
-            let request = RpcRequest {
-                id: OsRng.next_u32(),
-                body: RpcRequestBody::SetPeers(public_keys),
-            };
-            let mut buffer = Vec::with_capacity(4096);
-            request.encode(&mut buffer);
-            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0_u16))?;
-            socket.set_read_timeout(Some(UDP_READ_TIMEOUT))?;
-            socket.set_write_timeout(Some(UDP_WRITE_TIMEOUT))?;
-            socket.connect(relay_socket_addr)?;
-            socket.send(&buffer)?;
-            socket.recv(&mut buffer)?;
-            let response = RpcResponse::decode(&buffer).map_err(|_| "invalid response received")?;
-            if response.request_id != request.id {
-                return Err("invalid response received".into());
-            }
-            match response.body {
-                RpcResponseBody::SetPeers(result) => {
-                    result.map_err(|_| "invalid response received")?
-                }
-            }
+            let mut client = WgxClient::new(relay_socket_addr)?;
+            client.retry(|client| client.set_peers(&public_keys))?;
             Ok(ExitCode::SUCCESS)
         }
         None => Ok(ExitCode::SUCCESS),
     }
-}
-
-fn get_public_key(socket_addr: SocketAddr) -> Result<PublicKey, std::io::Error> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0_u16))?;
-    socket.set_read_timeout(Some(UDP_READ_TIMEOUT))?;
-    socket.set_write_timeout(Some(UDP_WRITE_TIMEOUT))?;
-    socket.connect(socket_addr)?;
-    socket.send(&[MessageKindExt::GetPublicKey as u8])?;
-    let mut data = [0_u8; 32];
-    let nreceived = socket.recv(&mut data[..])?;
-    if nreceived != data.len() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "invalid public key received",
-        ));
-    }
-    Ok(data.into())
 }
 
 enum Endpoint {
@@ -200,7 +147,3 @@ impl FromStr for DnsNameWithPort {
         }
     }
 }
-
-const UDP_READ_TIMEOUT: Duration = Duration::from_secs(7);
-const UDP_WRITE_TIMEOUT: Duration = UDP_READ_TIMEOUT;
-const UDP_NUM_RETRIES: usize = 3;

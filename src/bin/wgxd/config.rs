@@ -19,7 +19,7 @@ use crate::format_error;
 use crate::parse_config;
 use crate::Error;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgxd.conf";
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx.conf";
 
 pub(crate) struct Config {
     pub(crate) private_key: PrivateKey,
