@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -180,7 +182,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 UnixResponse::PublicKey(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
-            print!("{}", public_key.to_base64());
+            println!("{}", public_key.to_base64());
             Ok(ExitCode::SUCCESS)
         }
         Some(Command::Export) => {
@@ -239,19 +241,39 @@ fn print_routes(routes: &Routes) {
 }
 
 fn print_sessions(sessions: &Sessions) {
-    for ((sender_socket_addr, receiver_index), receiver_public_key) in sessions.sessions.iter() {
+    let now = SystemTime::now();
+    for ((spoke_public_key, hub_public_key), session) in sessions.sessions.iter() {
+        println!("{}", "session:".green().bold());
         println!(
-            "{} -> {} {}",
-            sender_socket_addr,
-            receiver_index,
-            receiver_public_key.to_base64()
+            "  {} {}",
+            "spoke public key:".bold(),
+            spoke_public_key.to_base64()
         );
+        println!(
+            "  {} {}",
+            "hub public key:".bold(),
+            hub_public_key.to_base64()
+        );
+        println!(
+            "  {} {}",
+            "latest handshake:".bold(),
+            match session.latest_handshake {
+                Some(t) => format_latest_handshake(t, "now", now),
+                None => "never".into(),
+            }
+        );
+        println!(
+            "  {} {}",
+            "transfer:".bold(),
+            format_transfer(session.bytes_received, session.bytes_sent)
+        );
+        println!();
     }
 }
 
 fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: SystemTime) -> String {
     match now.duration_since(latest_handshake) {
-        Ok(d) => format!("{} ago", format_duration(d)),
+        Ok(d) => format!("{} ago", ColoredDuration(format_duration(d))),
         Err(_) => default.to_string(),
     }
 }
@@ -259,8 +281,8 @@ fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: Sys
 fn format_transfer(received: u64, sent: u64) -> String {
     format!(
         "{} received, {} sent",
-        format_bytes(received),
-        format_bytes(sent)
+        ColoredBytes(format_bytes(received)),
+        ColoredBytes(format_bytes(sent))
     )
 }
 
@@ -269,4 +291,28 @@ where
     T: FromBase64,
 {
     Ok(T::from_base64(s).map_err(|e| e.to_string())?)
+}
+
+struct ColoredBytes(FormatBytes);
+
+impl Display for ColoredBytes {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0.integer)?;
+        if self.0.fraction != 0 {
+            write!(f, ".{}", self.0.fraction)?;
+        }
+        write!(f, " {}", self.0.unit.cyan())
+    }
+}
+
+struct ColoredDuration(FormatDuration);
+
+impl Display for ColoredDuration {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.0.integer)?;
+        if self.0.fraction != 0 {
+            write!(f, ".{}", self.0.fraction)?;
+        }
+        write!(f, " {}", self.0.unit.cyan())
+    }
 }

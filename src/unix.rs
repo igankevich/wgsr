@@ -76,7 +76,7 @@ pub struct Routes {
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct Sessions {
     #[bincode(with_serde)]
-    pub sessions: HashMap<(SocketAddr, u32), PublicKey>,
+    pub sessions: HashMap<(PublicKey, PublicKey), SessionStats>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,6 +84,14 @@ pub struct Sessions {
 pub struct AuthPeer {
     pub socket_addr: SocketAddr,
     pub latest_handshake: SystemTime,
+    pub bytes_received: u64,
+    pub bytes_sent: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+pub struct SessionStats {
+    pub latest_handshake: Option<SystemTime>,
     pub bytes_received: u64,
     pub bytes_sent: u64,
 }
@@ -359,10 +367,24 @@ mod tests {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
                 sessions: u
-                    .arbitrary::<HashMap<(ArbitrarySocketAddr, u32), [u8; 32]>>()?
+                    .arbitrary::<HashMap<([u8; 32], [u8; 32]), SessionStats>>()?
                     .into_iter()
-                    .map(|((k0, k1), v)| ((k0.0, k1), v.into()))
+                    .map(|((k0, k1), v)| ((k0.into(), k1.into()), v))
                     .collect(),
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for SessionStats {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let tmp = Some(
+                UNIX_EPOCH
+                    + Duration::from_secs(u.int_in_range(0_u64..=(60_u64 * 60 * 24 * 365 * 200))?),
+            );
+            Ok(Self {
+                latest_handshake: *u.choose(&[None, tmp])?,
+                bytes_received: u.arbitrary()?,
+                bytes_sent: u.arbitrary()?,
             })
         }
     }

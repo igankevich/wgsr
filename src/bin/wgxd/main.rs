@@ -7,6 +7,7 @@ use self::dispatcher::*;
 use self::error::*;
 use self::logger::*;
 use self::network_interface::*;
+use self::packet::*;
 use self::unix::*;
 use self::wg_relay::*;
 use crate::Config;
@@ -20,6 +21,7 @@ mod dispatcher;
 mod error;
 mod logger;
 mod network_interface;
+mod packet;
 mod unix;
 mod wg_relay;
 

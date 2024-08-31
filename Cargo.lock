@@ -629,8 +629,8 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wgproto"
-version = "0.4.0"
-source = "git+https://github.com/igankevich/wgproto?tag=0.4.0#03d51f53a90ee59b6c0d2ebafce690b68b21df14"
+version = "0.4.1"
+source = "git+https://github.com/igankevich/wgproto?tag=0.4.1#857dde82fba95282e0773a63f5b91b62f0c845fa"
 dependencies = [
  "blake2",
  "chacha20poly1305",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "wgx"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "arbitrary",
  "arbtest",

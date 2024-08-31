@@ -12,14 +12,14 @@ use wgproto::PublicKey;
 use wgx::AllowedPublicKeys;
 use wgx::FromBase64;
 use wgx::ToBase64;
+use wgx::DEFAULT_LISTEN_PORT;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use crate::format_error;
 use crate::parse_config;
 use crate::Error;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgxd.conf";
-pub(crate) const DEFAULT_LISTEN_PORT: u16 = 8787;
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx.conf";
 
 pub(crate) struct Config {
     pub(crate) private_key: PrivateKey,

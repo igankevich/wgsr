@@ -13,6 +13,8 @@ use log::error;
 use log::trace;
 use mio::net::UdpSocket;
 use mio::{Interest, Poll, Token};
+use rand::Rng;
+use rand_core::OsRng;
 use wgproto::DecodeWithContext;
 use wgproto::EncodeWithContext;
 use wgproto::EncryptedHandshakeInitiation;
@@ -31,6 +33,7 @@ use wgproto::Responder;
 use wgproto::Session;
 use wgproto::SessionIndex;
 use wgx::AllowedPublicKeys;
+use wgx::MessageKindExt;
 use wgx::Routes;
 use wgx::RpcDecode;
 use wgx::RpcEncode;
@@ -46,6 +49,8 @@ use crate::format_error;
 use crate::get_internet_addresses;
 use crate::Config;
 use crate::Error;
+use crate::IpPacket;
+use crate::IpPacketView;
 
 pub(crate) struct WireguardRelay {
     socket: UdpSocket,
@@ -60,6 +65,7 @@ pub(crate) struct WireguardRelay {
     // (sender-socket-address, receiver-index) -> receiver-public-key
     // (receiver-socket-address, sender-index) -> sender-public-key
     sessions: HashMap<(SocketAddr, u32), PublicKey>,
+    other_sessions: HashMap<(PublicKey, PublicKey), RegularSession>,
     events: BinaryHeap<ExpiryEvent>,
     buffer: Vec<u8>,
 }
@@ -81,6 +87,7 @@ impl WireguardRelay {
             allowed_public_keys: config.allowed_public_keys,
             socket_addr_to_public_key: Default::default(),
             sessions: Default::default(),
+            other_sessions: Default::default(),
             events: Default::default(),
             buffer: vec![0_u8; MAX_PACKET_SIZE],
         })
@@ -236,6 +243,10 @@ impl WireguardRelay {
             *from_public_key,
         );
         let nbytes = packet.len() as u64;
+        self.other_sessions
+            .entry((*from_public_key, *to_public_key))
+            .or_default()
+            .bytes_sent += nbytes;
         if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
             peer.bytes_received += nbytes;
         }
@@ -288,6 +299,12 @@ impl WireguardRelay {
             *from_public_key,
         );
         let nbytes = packet.len() as u64;
+        let regular_session = self
+            .other_sessions
+            .entry((to_public_key, *from_public_key))
+            .or_default();
+        regular_session.bytes_received += nbytes;
+        regular_session.latest_handshake = Some(SystemTime::now());
         if let Some(peer) = self.auth_peers.get_mut(from_public_key) {
             peer.bytes_received += nbytes;
         }
@@ -335,6 +352,7 @@ impl WireguardRelay {
                 .session;
             let data = session.receive(&message)?;
             if data.len() >= IP_HEADER_LEN + UDP_HEADER_LEN {
+                let incoming = IpPacketView::new(&data);
                 let request = RpcRequest::decode(&data[(IP_HEADER_LEN + UDP_HEADER_LEN)..])?;
                 match request.body {
                     RpcRequestBody::SetPeers(mut public_keys) => {
@@ -348,13 +366,13 @@ impl WireguardRelay {
                             request_id: request.id,
                             body: RpcResponseBody::SetPeers(Ok(())),
                         };
-                        let mut response_bytes = Vec::new();
-                        response.encode(&mut response_bytes);
-                        let message = session.send(&response_bytes)?;
+                        let response_bytes = response.encode_to_vec();
+                        let outgoing = new_outgoing_udp_packet(&response_bytes, incoming);
+                        let message = session.send(&outgoing)?;
                         let mut buffer = Vec::new();
                         let mut signer = MacSigner::new(&self.public_key, None);
                         message.encode_with_context(&mut buffer, &mut signer);
-                        self.socket.send_to(packet, from)?;
+                        self.socket.send_to(&buffer, from)?;
                     }
                 }
             }
@@ -419,7 +437,11 @@ impl WireguardRelay {
 
     pub(crate) fn sessions(&self) -> Result<Sessions, Error> {
         Ok(Sessions {
-            sessions: self.sessions.clone(),
+            sessions: self
+                .other_sessions
+                .iter()
+                .map(|(k, v)| (*k, v.into()))
+                .collect(),
         })
     }
 
@@ -480,7 +502,9 @@ impl WireguardRelay {
                 self.socket_addr_to_public_key.remove(&peer.socket_addr);
                 if let Some(spokes) = self.hub_to_spokes.remove(&event.public_key) {
                     for spoke in spokes.into_iter() {
-                        self.spoke_to_hub.remove(&spoke);
+                        if let Some(hub) = self.spoke_to_hub.remove(&spoke) {
+                            self.other_sessions.remove(&(spoke, hub));
+                        }
                     }
                 }
             }
@@ -517,6 +541,23 @@ impl From<&AuthPeer> for wgx::AuthPeer {
     }
 }
 
+#[derive(Default)]
+struct RegularSession {
+    latest_handshake: Option<SystemTime>,
+    bytes_received: u64,
+    bytes_sent: u64,
+}
+
+impl From<&RegularSession> for wgx::SessionStats {
+    fn from(other: &RegularSession) -> Self {
+        Self {
+            latest_handshake: other.latest_handshake,
+            bytes_received: other.bytes_received,
+            bytes_sent: other.bytes_sent,
+        }
+    }
+}
+
 struct ExpiryEvent {
     expiry: SystemTime,
     public_key: PublicKey,
@@ -545,10 +586,20 @@ impl Ord for ExpiryEvent {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-enum MessageKindExt {
-    GetPublicKey = 49,
+fn new_outgoing_udp_packet(payload: &[u8], incoming: IpPacketView<'_>) -> Vec<u8> {
+    let mut outgoing = IpPacket::new_udp(payload);
+    outgoing.set_id(OsRng.gen_range(0_u16..u16::MAX));
+    outgoing.set_ttl(64);
+    outgoing.set_source(incoming.destination());
+    outgoing.set_destination(incoming.source());
+    outgoing.set_source_port(incoming.destination_port());
+    outgoing.set_destination_port(incoming.source_port());
+    let mut outgoing = outgoing.into_udp();
+    // padding
+    while outgoing.len() % 16 != 0 {
+        outgoing.push(0);
+    }
+    outgoing
 }
 
 const MAX_PACKET_SIZE: usize = 65535;
