@@ -25,7 +25,8 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     let output = Command::new("wg")
         .args(["show", wg_interface, "allowed-ips"])
         .stdin(Stdio::null())
-        .output()?;
+        .output()
+        .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
     if !output.status.success() {
         return Err(format_error!(
             "wg failed with status {:?}: {}",
@@ -69,7 +70,8 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                     "persistent-keepalive",
                     "23",
                 ])
-                .status()?;
+                .status()
+                .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
             if !status.success() {
                 return Err(format_error!("wg failed with status {:?}", status));
             }

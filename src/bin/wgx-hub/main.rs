@@ -118,6 +118,18 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             let (relay_ip_addr, peers_public_keys) =
                 get_relay_ip_addr_and_peers_public_keys(&interface, &relay_public_key, endpoint)?;
             eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
+            eprintln!(
+                "✓ Peers: {}",
+                peers_public_keys
+                    .iter()
+                    .fold(String::with_capacity(4096), |mut a, b| {
+                        if !a.is_empty() {
+                            a.push_str(", ");
+                        }
+                        a.push_str(&b.to_base64());
+                        a
+                    })
+            );
             let endpoint = Endpoint::IpAddr(relay_ip_addr);
             let endpoint = endpoint
                 .to_socket_addr(DEFAULT_LISTEN_PORT)?
