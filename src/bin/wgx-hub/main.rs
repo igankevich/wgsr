@@ -118,8 +118,17 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             let (relay_ip_addr, peers_public_keys) =
                 get_relay_ip_addr_and_peers_public_keys(&interface, &relay_public_key, endpoint)?;
             eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
+            if peers_public_keys.is_empty() {
+                return Ok(ExitCode::SUCCESS);
+            }
+            let endpoint = Endpoint::IpAddr(relay_ip_addr);
+            let endpoint = endpoint
+                .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+            let mut client = WgxClient::new(endpoint)?;
+            client.retry(|client| client.set_peers(&peers_public_keys))?;
             eprintln!(
-                "✓ Peers: {}",
+                "✓ Published peers: {}",
                 peers_public_keys
                     .iter()
                     .fold(String::with_capacity(4096), |mut a, b| {
@@ -130,13 +139,6 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                         a
                     })
             );
-            let endpoint = Endpoint::IpAddr(relay_ip_addr);
-            let endpoint = endpoint
-                .to_socket_addr(DEFAULT_LISTEN_PORT)?
-                .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
-            let mut client = WgxClient::new(endpoint)?;
-            client.retry(|client| client.set_peers(&peers_public_keys))?;
-            eprintln!("✓ Published peers");
             Ok(ExitCode::SUCCESS)
         }
         None => Ok(ExitCode::SUCCESS),

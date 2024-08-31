@@ -73,16 +73,16 @@ impl WgxClient {
             let dt = Some(timeout + jitter);
             self.socket.set_write_timeout(dt)?;
             self.socket.set_read_timeout(dt)?;
-            match callback(self) {
+            return match callback(self) {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     if i >= 2 {
                         eprintln!("retrying... attempt {}/{}", i, UDP_NUM_RETRIES);
                     }
+                    timeout *= 2;
                     continue;
                 }
                 other => other,
-            }?;
-            timeout *= 2;
+            };
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,

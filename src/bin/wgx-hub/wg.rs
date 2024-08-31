@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::process::Command;
+use std::process::ExitStatus;
+use std::process::Output;
 use std::process::Stdio;
 
 use ipnet::IpNet;
@@ -27,13 +29,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-    if !output.status.success() {
-        return Err(format_error!(
-            "wg failed with status {:?}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    check_status(&output, "wg")?;
     let output =
         String::from_utf8(output.stdout).map_err(|e| format_error!("utf-8 error: {}", e))?;
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
@@ -73,13 +69,33 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                 .status()
                 .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
             if !status.success() {
-                return Err(format_error!("wg failed with status {:?}", status));
+                return Err(format_error!("`wg` failed: {}", status_to_string(status)));
             }
             DEFAULT_RELAY_INNER_IP_ADDR.into()
         }
         Some(relay_ip_addr) => relay_ip_addr,
     };
     Ok((relay_ip_addr, public_keys))
+}
+
+fn check_status(output: &Output, command: &str) -> Result<(), std::io::Error> {
+    if !output.status.success() {
+        Err(format_error!(
+            "`{}` failed: {}: {}",
+            command,
+            status_to_string(output.status),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn status_to_string(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exited with status code {}", code),
+        None => "terminated by signal".to_string(),
+    }
 }
 
 const DEFAULT_RELAY_INNER_IP_ADDR: Ipv4Addr = Ipv4Addr::new(10, 107, 111, 116);
