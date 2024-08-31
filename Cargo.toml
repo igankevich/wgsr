@@ -1,11 +1,11 @@
 [package]
 name = "wgx"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 license = "GPL-3.0"
 
 [dependencies]
-base64 = { version = "0.22.1", features = ["std", "alloc"], default-features = false }
+base64ct = { version = "1.6.0", features = ["std", "alloc"], default-features = false }
 bincode = { version = "2.0.0-rc.3", features = ["std", "serde", "derive"], default-features = false }
 clap = { version = "4.5.16", features = ["std", "derive", "help", "usage"], default-features = false }
 colored = "2.1.0"
