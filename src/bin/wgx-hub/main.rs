@@ -12,8 +12,11 @@ use wgx::FromBase64;
 use wgx::ToBase64;
 use wgx::DEFAULT_LISTEN_PORT;
 
+use self::wg::*;
 use self::wgx_client::*;
+use crate::get_relay_ip_addr_and_peers_public_keys;
 
+mod wg;
 mod wgx_client;
 
 #[derive(Parser)]
@@ -48,6 +51,15 @@ enum Command {
         /// Peers' public keys.
         #[arg(value_name = "PUBLIC-KEY")]
         public_keys: Vec<String>,
+    },
+    /// Query relay's public key and set peers automatically.
+    Join {
+        /// Wireguard network interface name.
+        #[arg(value_name = "NAME")]
+        interface: String,
+        /// Relay's endpoint.
+        #[arg(value_name = "IP:PORT")]
+        endpoint: String,
     },
 }
 
@@ -91,6 +103,29 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 .map_err(|_| "invalid public key format")?;
             let mut client = WgxClient::new(relay_socket_addr)?;
             client.retry(|client| client.set_peers(&public_keys))?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Join {
+            interface,
+            endpoint: endpoint_str,
+        }) => {
+            let endpoint: Endpoint = endpoint_str.parse()?;
+            let endpoint = endpoint
+                .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+            let mut client = WgxClient::new(endpoint)?;
+            let relay_public_key = client.retry(|client| client.get_public_key())?;
+            eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
+            let (relay_ip_addr, peers_public_keys) =
+                get_relay_ip_addr_and_peers_public_keys(&interface, &relay_public_key)?;
+            eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
+            let endpoint = Endpoint::IpAddr(relay_ip_addr);
+            let endpoint = endpoint
+                .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+            let mut client = WgxClient::new(endpoint)?;
+            client.retry(|client| client.set_peers(&peers_public_keys))?;
+            eprintln!("✓ Published peers");
             Ok(ExitCode::SUCCESS)
         }
         None => Ok(ExitCode::SUCCESS),
