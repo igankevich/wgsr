@@ -116,7 +116,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             let relay_public_key = client.retry(|client| client.get_public_key())?;
             eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
             let (relay_ip_addr, peers_public_keys) =
-                get_relay_ip_addr_and_peers_public_keys(&interface, &relay_public_key)?;
+                get_relay_ip_addr_and_peers_public_keys(&interface, &relay_public_key, endpoint)?;
             eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
             let endpoint = Endpoint::IpAddr(relay_ip_addr);
             let endpoint = endpoint
