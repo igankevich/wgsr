@@ -1,6 +1,6 @@
 [package]
 name = "wgx"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "GPL-3.0"
 
@@ -15,6 +15,7 @@ libc = "0.2.156"
 log = { version = "0.4.22", features = [], default-features = false }
 mio = { version = "1.0.1", features = ["net", "os-poll", "os-ext"], default-features = false }
 network-interface = "2.0.0"
+qrencode = { version = "0.14.0", features = [], default-features = false }
 rand = { version = "0.8.5", features = [], default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"], default-features = false }
 serde = "1.0.208"

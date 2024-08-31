@@ -131,6 +131,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "checked_int_cast"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17cc5e6b5ab06331c33589842070416baa137e8b0eb912b008cfd4a78ada7919"
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -439,6 +445,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrencode"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a60db121a642f869443a5d7461fa7978e74248b5299d21d3e97f5c0b1905f7c1"
+dependencies = [
+ "checked_int_cast",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -645,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "wgx"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arbitrary",
  "arbtest",
@@ -659,6 +674,7 @@ dependencies = [
  "log",
  "mio",
  "network-interface",
+ "qrencode",
  "rand",
  "rand_core",
  "serde",
