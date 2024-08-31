@@ -66,6 +66,8 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                     relay_socket_addr.to_string().as_str(),
                     "allowed-ips",
                     format!("{}/32", DEFAULT_RELAY_INNER_IP_ADDR).as_str(),
+                    "persistent-keepalive",
+                    "23",
                 ])
                 .status()?;
             if !status.success() {
