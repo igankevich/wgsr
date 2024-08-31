@@ -352,12 +352,7 @@ impl WireguardRelay {
                 .session;
             let data = session.receive(&message)?;
             if data.len() >= IP_HEADER_LEN + UDP_HEADER_LEN {
-                eprintln!("udp in {} {:?}", data.len(), data);
-                let ip = IpPacketView::new(&data);
-                let source = ip.source();
-                let destination = ip.destination();
-                let source_port = ip.source_port();
-                let destination_port = ip.destination_port();
+                let incoming = IpPacketView::new(&data);
                 let request = RpcRequest::decode(&data[(IP_HEADER_LEN + UDP_HEADER_LEN)..])?;
                 match request.body {
                     RpcRequestBody::SetPeers(mut public_keys) => {
@@ -372,26 +367,8 @@ impl WireguardRelay {
                             body: RpcResponseBody::SetPeers(Ok(())),
                         };
                         let response_bytes = response.encode_to_vec();
-                        let mut ip_packet = IpPacket::new_udp(&response_bytes);
-                        ip_packet.set_id(OsRng.gen_range(0_u16..u16::MAX));
-                        ip_packet.set_ttl(64);
-                        ip_packet.set_source(destination);
-                        ip_packet.set_destination(source);
-                        ip_packet.set_source_port(destination_port);
-                        ip_packet.set_destination_port(source_port);
-                        let mut ip_packet = ip_packet.into_udp();
-                        while ip_packet.len() % 16 != 0 {
-                            ip_packet.push(0);
-                        }
-                        let view = IpPacketView::new(&ip_packet);
-                        eprintln!("source {}:{}", view.source(), view.source_port());
-                        eprintln!(
-                            "destination {}:{}",
-                            view.destination(),
-                            view.destination_port()
-                        );
-                        eprintln!("udp out {} {:?}", ip_packet.len(), ip_packet);
-                        let message = session.send(&ip_packet)?;
+                        let outgoing = new_outgoing_udp_packet(&response_bytes, incoming);
+                        let message = session.send(&outgoing)?;
                         let mut buffer = Vec::new();
                         let mut signer = MacSigner::new(&self.public_key, None);
                         message.encode_with_context(&mut buffer, &mut signer);
@@ -607,6 +584,22 @@ impl Ord for ExpiryEvent {
         // inverse
         other.expiry.cmp(&self.expiry)
     }
+}
+
+fn new_outgoing_udp_packet(payload: &[u8], incoming: IpPacketView<'_>) -> Vec<u8> {
+    let mut outgoing = IpPacket::new_udp(payload);
+    outgoing.set_id(OsRng.gen_range(0_u16..u16::MAX));
+    outgoing.set_ttl(64);
+    outgoing.set_source(incoming.destination());
+    outgoing.set_destination(incoming.source());
+    outgoing.set_source_port(incoming.destination_port());
+    outgoing.set_destination_port(incoming.source_port());
+    let mut outgoing = outgoing.into_udp();
+    // padding
+    while outgoing.len() % 16 != 0 {
+        outgoing.push(0);
+    }
+    outgoing
 }
 
 const MAX_PACKET_SIZE: usize = 65535;
