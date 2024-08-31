@@ -51,6 +51,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
             public_keys.insert(public_key);
         }
     }
+    let inner_ip_addr_str = format!("{}/32", DEFAULT_RELAY_INNER_IP_ADDR);
     let relay_ip_addr: IpAddr = match relay_ip_addr {
         None => {
             let status = Command::new("wg")
@@ -62,7 +63,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                     "endpoint",
                     relay_socket_addr.to_string().as_str(),
                     "allowed-ips",
-                    format!("{}/32", DEFAULT_RELAY_INNER_IP_ADDR).as_str(),
+                    inner_ip_addr_str.as_str(),
                     "persistent-keepalive",
                     "23",
                 ])
@@ -75,6 +76,18 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
         }
         Some(relay_ip_addr) => relay_ip_addr,
     };
+    Command::new("ip")
+        .args([
+            "route",
+            "add",
+            inner_ip_addr_str.as_str(),
+            "dev",
+            wg_interface,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .status()?;
     Ok((relay_ip_addr, public_keys))
 }
 
