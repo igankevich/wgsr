@@ -448,7 +448,6 @@ impl WireguardRelay {
     pub(crate) fn export_config(&self) -> Result<String, Error> {
         use std::fmt::Write;
         let mut buf = String::with_capacity(4096);
-        writeln!(&mut buf, "# wgx authentication peer")?;
         writeln!(&mut buf, "[Peer]")?;
         writeln!(&mut buf, "PublicKey = {}", self.public_key.to_base64())?;
         let mut internet_addresses = get_internet_addresses()?;
@@ -472,7 +471,6 @@ impl WireguardRelay {
             }
         }
         writeln!(&mut buf, "PersistentKeepalive = 23")?;
-        writeln!(&mut buf, "# no IPs are allowed")?;
         writeln!(&mut buf, "AllowedIPs =")?;
         Ok(buf)
     }
