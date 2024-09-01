@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::SystemTime;
@@ -8,8 +7,6 @@ use std::time::SystemTime;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
-use wgproto::PublicKey;
-use wgx::FromBase64;
 use wgx::Routes;
 use wgx::Sessions;
 use wgx::Status;
@@ -30,9 +27,10 @@ mod unix;
 
 #[derive(Parser)]
 #[command(
-    about = "Wireguard Secure Relay.",
+    about = "Wireguard Relay Extensions.",
     long_about = None,
-    trailing_var_arg = true
+    trailing_var_arg = true,
+    arg_required_else_help=true
 )]
 struct Args {
     /// Print version.
@@ -46,13 +44,20 @@ struct Args {
         default_value = DEFAULT_UNIX_SOCKET_PATH
     )]
     unix_socket_path: PathBuf,
-    /// Command to run.
+    /// RelayCommand to run.
     #[command(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Relay commands.
+    #[command(subcommand)]
+    Relay(RelayCommand),
+}
+
+#[derive(Subcommand)]
+enum RelayCommand {
     /// Check if wgx daemon is running.
     Running,
     /// Get relay status.
@@ -66,60 +71,6 @@ enum Command {
     PublicKey,
     /// Export hub configuration.
     Export,
-}
-
-#[derive(Subcommand)]
-enum RelayCommand {
-    /// Add new relay.
-    Add {
-        /// Listen port.
-        listen_port: Option<NonZeroU16>,
-    },
-    /// Remove existing relay.
-    Rm {
-        /// Listen port.
-        listen_port: NonZeroU16,
-    },
-}
-
-#[derive(Subcommand)]
-enum HubCommand {
-    /// Add new hub.
-    Add {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-    /// Remove existing hub.
-    Rm {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-}
-
-#[derive(Subcommand)]
-enum SpokeCommand {
-    /// Add new hub.
-    Add {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-    /// Remove existing hub.
-    Rm {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
 }
 
 fn main() -> ExitCode {
@@ -142,58 +93,60 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     match args.command {
-        Some(Command::Running) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            match client.call(UnixRequest::Running)? {
-                UnixResponse::Running => Ok(ExitCode::SUCCESS),
-                _ => Ok(ExitCode::FAILURE),
+        Command::Relay(command) => match command {
+            RelayCommand::Running => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(UnixRequest::Running)? {
+                    UnixResponse::Running => Ok(ExitCode::SUCCESS),
+                    _ => Ok(ExitCode::FAILURE),
+                }
             }
-        }
-        Some(Command::Status) | None => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let status = match client.call(UnixRequest::Status)? {
-                UnixResponse::Status(status) => status?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_status(&status);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Routes) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let routes = match client.call(UnixRequest::Routes)? {
-                UnixResponse::Routes(routes) => routes?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_routes(&routes);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Sessions) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let sessions = match client.call(UnixRequest::Sessions)? {
-                UnixResponse::Sessions(sessions) => sessions?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_sessions(&sessions);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::PublicKey) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let public_key = match client.call(UnixRequest::PublicKey)? {
-                UnixResponse::PublicKey(result) => result?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            println!("{}", public_key.to_base64());
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Export) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let config = match client.call(UnixRequest::Export)? {
-                UnixResponse::Export(result) => result?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print!("{}", config);
-            Ok(ExitCode::SUCCESS)
-        }
+            RelayCommand::Status => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let status = match client.call(UnixRequest::Status)? {
+                    UnixResponse::Status(status) => status?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_status(&status);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Routes => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let routes = match client.call(UnixRequest::Routes)? {
+                    UnixResponse::Routes(routes) => routes?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_routes(&routes);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Sessions => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let sessions = match client.call(UnixRequest::Sessions)? {
+                    UnixResponse::Sessions(sessions) => sessions?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_sessions(&sessions);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::PublicKey => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let public_key = match client.call(UnixRequest::PublicKey)? {
+                    UnixResponse::PublicKey(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                println!("{}", public_key.to_base64());
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Export => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let config = match client.call(UnixRequest::Export)? {
+                    UnixResponse::Export(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print!("{}", config);
+                Ok(ExitCode::SUCCESS)
+            }
+        },
     }
 }
 
@@ -284,13 +237,6 @@ fn format_transfer(received: u64, sent: u64) -> String {
         ColoredBytes(format_bytes(received)),
         ColoredBytes(format_bytes(sent))
     )
-}
-
-fn base64_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Send + 'static>>
-where
-    T: FromBase64,
-{
-    Ok(T::from_base64(s).map_err(|e| e.to_string())?)
 }
 
 struct ColoredBytes(FormatBytes);
