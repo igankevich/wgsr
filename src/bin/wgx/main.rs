@@ -21,6 +21,7 @@ use wgx::ToBase64;
 use wgx::UnixRequest;
 use wgx::UnixResponse;
 use wgx::DEFAULT_LISTEN_PORT;
+use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::endpoint::*;
@@ -30,8 +31,6 @@ use self::units::*;
 use self::unix::*;
 use self::wg::*;
 use self::wgx_client::*;
-use crate::format_bytes;
-use crate::format_duration;
 
 mod endpoint;
 mod error;
@@ -303,14 +302,22 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     get_wg_public_key(&interface)?.to_base64()
                 )?;
                 writeln!(&mut config, "Endpoint = {}", wg_endpoint)?;
-                writeln!(&mut config, "PersistentKeepalive = 23")?;
+                writeln!(
+                    &mut config,
+                    "PersistentKeepalive = {}",
+                    DEFAULT_PERSISTENT_KEEPALIVE.as_secs()
+                )?;
                 writeln!(&mut config, "AllowedIPs = TODO")?;
                 writeln!(&mut config)?;
                 // relay
                 writeln!(&mut config, "[Peer]")?;
                 writeln!(&mut config, "PublicKey = {}", relay_public_key.to_base64())?;
                 writeln!(&mut config, "Endpoint = {}", wg_endpoint)?;
-                writeln!(&mut config, "PersistentKeepalive = 23")?;
+                writeln!(
+                    &mut config,
+                    "PersistentKeepalive = {}",
+                    DEFAULT_PERSISTENT_KEEPALIVE.as_secs()
+                )?;
                 writeln!(&mut config, "AllowedIPs =")?;
                 let config = if qr {
                     // remove comments and empty lines

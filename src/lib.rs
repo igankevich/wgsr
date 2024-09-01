@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 mod base64;
 mod message_ext;
 mod rpc;
@@ -9,3 +11,4 @@ pub use self::rpc::*;
 pub use self::unix::*;
 
 pub const DEFAULT_LISTEN_PORT: u16 = 8787;
+pub const DEFAULT_PERSISTENT_KEEPALIVE: Duration = Duration::from_secs(23);

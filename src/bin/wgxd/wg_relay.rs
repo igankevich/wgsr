@@ -44,6 +44,7 @@ use wgx::RpcResponseBody;
 use wgx::Sessions;
 use wgx::Status;
 use wgx::ToBase64;
+use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 
 use crate::format_error;
 use crate::get_internet_addresses;
@@ -470,7 +471,11 @@ impl WireguardRelay {
                 IpAddr::V6(addr) => writeln!(&mut buf, "# Endpoint = [{}]:{}", addr, port)?,
             }
         }
-        writeln!(&mut buf, "PersistentKeepalive = 23")?;
+        writeln!(
+            &mut buf,
+            "PersistentKeepalive = {}",
+            DEFAULT_PERSISTENT_KEEPALIVE.as_secs()
+        )?;
         writeln!(&mut buf, "AllowedIPs =")?;
         Ok(buf)
     }

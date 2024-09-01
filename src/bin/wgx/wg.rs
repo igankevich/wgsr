@@ -11,6 +11,7 @@ use ipnet::IpNet;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::ToBase64;
+use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 
 use crate::format_error;
 use crate::Error;
@@ -70,7 +71,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                     "allowed-ips",
                     inner_ip_addr_str.as_str(),
                     "persistent-keepalive",
-                    "23",
+                    DEFAULT_PERSISTENT_KEEPALIVE.as_secs().to_string().as_str(),
                 ])
                 .status()
                 .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
