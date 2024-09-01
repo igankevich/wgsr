@@ -19,6 +19,18 @@ macro_rules! format_error {
     };
 }
 
+pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, std::io::Error> {
+    let output = Command::new("wg")
+        .args(["show", wg_interface, "public-key"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
+    check_status(&output, "wg")?;
+    let output =
+        String::from_utf8(output.stdout).map_err(|e| format_error!("utf-8 error: {}", e))?;
+    FromBase64::from_base64(output.trim()).map_err(|_| format_error!("base64 i/o error"))
+}
+
 pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     wg_interface: &str,
     relay_public_key: &PublicKey,

@@ -8,8 +8,6 @@ use std::time::SystemTime;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
-use qrencode::EcLevel;
-use qrencode::QrCode;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::Routes;
@@ -21,14 +19,12 @@ use wgx::UnixResponse;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::error::*;
-use self::qrcode::*;
 use self::units::*;
 use self::unix::*;
 use crate::format_bytes;
 use crate::format_duration;
 
 mod error;
-mod qrcode;
 mod units;
 mod unix;
 
@@ -68,12 +64,8 @@ enum Command {
     Sessions,
     /// Get relay's public key.
     PublicKey,
-    /// Export peer configuration.
-    Export {
-        /// Export as QR-code.
-        #[clap(long, action)]
-        qr: bool,
-    },
+    /// Export hub configuration.
+    Export,
 }
 
 #[derive(Subcommand)]
@@ -193,32 +185,13 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!("{}", public_key.to_base64());
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Export { qr }) => {
+        Some(Command::Export) => {
             let mut client = UnixClient::new(args.unix_socket_path)?;
             let config = match client.call(UnixRequest::Export)? {
                 UnixResponse::Export(result) => result?,
                 _ => return Ok(ExitCode::FAILURE),
             };
-            if qr {
-                // remove comments
-                let mut short_config = String::with_capacity(config.len());
-                for line in config.lines() {
-                    let line = match line.find('#') {
-                        Some(i) => &line[..i],
-                        None => line,
-                    }
-                    .trim();
-                    if !line.is_empty() {
-                        short_config.push_str(line);
-                        short_config.push('\n');
-                    }
-                }
-                let qrcode =
-                    QrCode::with_error_correction_level(short_config.as_bytes(), EcLevel::H)?;
-                print!("{}", qrcode_to_string(qrcode));
-            } else {
-                print!("{}", config);
-            }
+            print!("{}", config);
             Ok(ExitCode::SUCCESS)
         }
     }

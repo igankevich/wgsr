@@ -22,6 +22,15 @@ impl Endpoint {
             Self::DnsName(x) => Ok(format!("{}:{}", x, default_port).to_socket_addrs()?.next()),
         }
     }
+
+    pub(crate) fn to_string(&self, default_port: u16) -> String {
+        match self {
+            Self::SocketAddr(x) => x.to_string(),
+            Self::IpAddr(x) => format!("{}:{}", x, default_port),
+            Self::DnsNameWithPort(x) => x.name.clone(),
+            Self::DnsName(x) => format!("{}:{}", x, default_port),
+        }
+    }
 }
 
 impl FromStr for Endpoint {
