@@ -4,6 +4,12 @@ use std::fmt::Formatter;
 
 pub struct Error(pub String);
 
+impl Error {
+    pub fn map(other: impl ToString) -> Self {
+        Self(other.to_string())
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)

@@ -12,38 +12,32 @@ use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::ToBase64;
 
-#[macro_export]
-macro_rules! format_error {
-    ($($args:expr),*) => {
-        ::std::io::Error::new(::std::io::ErrorKind::Other, format!($($args),*))
-    };
-}
+use crate::format_error;
+use crate::Error;
 
-pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, std::io::Error> {
+pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, Error> {
     let output = Command::new("wg")
         .args(["show", wg_interface, "public-key"])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
     check_status(&output, "wg")?;
-    let output =
-        String::from_utf8(output.stdout).map_err(|e| format_error!("utf-8 error: {}", e))?;
-    FromBase64::from_base64(output.trim()).map_err(|_| format_error!("base64 i/o error"))
+    let output = String::from_utf8(output.stdout).map_err(Error::map)?;
+    FromBase64::from_base64(output.trim()).map_err(Error::map)
 }
 
 pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     wg_interface: &str,
     relay_public_key: &PublicKey,
     relay_socket_addr: SocketAddr,
-) -> Result<(IpAddr, HashSet<PublicKey>), std::io::Error> {
+) -> Result<(IpAddr, HashSet<PublicKey>), Error> {
     let output = Command::new("wg")
         .args(["show", wg_interface, "allowed-ips"])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
     check_status(&output, "wg")?;
-    let output =
-        String::from_utf8(output.stdout).map_err(|e| format_error!("utf-8 error: {}", e))?;
+    let output = String::from_utf8(output.stdout).map_err(Error::map)?;
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
     let mut relay_ip_addr: Option<IpAddr> = None;
     for line in output.lines() {
@@ -54,10 +48,9 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
         let allowed_ips = iter
             .next()
             .ok_or_else(|| format_error!("invalid wg line: `{}`", line))?;
-        let public_key =
-            PublicKey::from_base64(public_key).map_err(|_| format_error!("base64 i/o error"))?;
+        let public_key = PublicKey::from_base64(public_key).map_err(Error::map)?;
         if &public_key == relay_public_key {
-            let ipnet: IpNet = allowed_ips.parse().map_err(|e| format_error!("{}", e))?;
+            let ipnet: IpNet = allowed_ips.parse().map_err(Error::map)?;
             relay_ip_addr = Some(ipnet.network());
         } else {
             public_keys.insert(public_key);
@@ -103,7 +96,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     Ok((relay_ip_addr, public_keys))
 }
 
-fn check_status(output: &Output, command: &str) -> Result<(), std::io::Error> {
+fn check_status(output: &Output, command: &str) -> Result<(), Error> {
     if !output.status.success() {
         Err(format_error!(
             "`{}` failed: {}: {}",
