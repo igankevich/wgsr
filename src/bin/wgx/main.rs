@@ -26,6 +26,7 @@ use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::endpoint::*;
 use self::error::*;
+use self::hub_config::*;
 use self::qrcode::*;
 use self::units::*;
 use self::unix::*;
@@ -34,6 +35,7 @@ use self::wgx_client::*;
 
 mod endpoint;
 mod error;
+mod hub_config;
 mod qrcode;
 mod units;
 mod unix;
@@ -59,6 +61,14 @@ struct Args {
         default_value = DEFAULT_UNIX_SOCKET_PATH
     )]
     unix_socket_path: PathBuf,
+    /// Configuration file path.
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "path",
+        default_value = DEFAULT_CONFIGURATION_FILE_PATH
+    )]
+    config_file: PathBuf,
     /// RelayCommand to run.
     #[command(subcommand)]
     command: Command,
@@ -139,6 +149,10 @@ enum HubCommand {
         #[arg(value_name = "IP[:PORT]")]
         endpoint: String,
     },
+    Init,
+    Start,
+    Stop,
+    Reload,
 }
 
 fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
@@ -276,6 +290,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 interface,
                 endpoint: endpoint_str,
             } => {
+                let _config = Config::default();
                 let endpoint: Endpoint = endpoint_str.parse()?;
                 let socket_addr = endpoint
                     .to_socket_addr(DEFAULT_LISTEN_PORT)?
@@ -340,6 +355,34 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     config
                 };
                 print!("{}", config);
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Init => {
+                let config = Config::load(args.config_file.as_path())?;
+                config.save(args.config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Start => {
+                let config_file = args.config_file.as_path();
+                let config = Config::load(config_file)?;
+                if !config_file.exists() {
+                    config.save(config_file)?;
+                }
+                let wg = Wg::new(config.interface_name);
+                wg.stop()?;
+                wg.start(&config.interface)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Stop => {
+                let config = Config::load(args.config_file.as_path())?;
+                let wg = Wg::new(config.interface_name);
+                wg.stop()?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Reload => {
+                let config = Config::load(args.config_file.as_path())?;
+                let wg = Wg::new(config.interface_name);
+                wg.reload(&config.interface)?;
                 Ok(ExitCode::SUCCESS)
             }
         },

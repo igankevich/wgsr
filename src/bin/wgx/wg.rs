@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -8,6 +9,7 @@ use std::process::Output;
 use std::process::Stdio;
 
 use ipnet::IpNet;
+use tempfile::NamedTempFile;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::ToBase64;
@@ -15,6 +17,139 @@ use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 
 use crate::format_error;
 use crate::Error;
+use crate::InterfaceConfig;
+
+pub(crate) struct Wg {
+    name: String,
+}
+
+impl Wg {
+    pub(crate) fn new(name: String) -> Self {
+        Self { name }
+    }
+
+    pub(crate) fn start(&self, config: &InterfaceConfig) -> Result<(), Error> {
+        self.ip_link_add()?;
+        self.ip_link_set_up()?;
+        self.ip_address_add(config)?;
+        self.ip_route_add(config)?;
+        self.wg_conf("setconf", config)?;
+        Ok(())
+    }
+
+    pub(crate) fn reload(&self, config: &InterfaceConfig) -> Result<(), Error> {
+        self.ip_address_flush()?;
+        self.ip_address_add(config)?;
+        self.ip_route_flush()?;
+        self.ip_route_add(config)?;
+        self.wg_conf("syncconf", config)?;
+        Ok(())
+    }
+
+    pub(crate) fn stop(&self) -> Result<(), Error> {
+        self.ip_link_delete()?;
+        Ok(())
+    }
+
+    fn ip_link_add(&self) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args(["link", "add", self.name.as_str(), "type", "wireguard"])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn ip_link_delete(&self) -> Result<(), Error> {
+        Command::new("ip")
+            .args(["link", "delete", self.name.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        Ok(())
+    }
+
+    fn ip_link_set_up(&self) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args(["link", "set", self.name.as_str(), "up"])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn ip_address_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args([
+                "address",
+                "add",
+                config.address.to_string().as_str(),
+                "dev",
+                self.name.as_str(),
+            ])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn ip_address_flush(&self) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args(["address", "flush", "dev", self.name.as_str()])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn ip_route_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args([
+                "route",
+                "add",
+                config.address.network().to_string().as_str(),
+                "dev",
+                self.name.as_str(),
+            ])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn ip_route_flush(&self) -> Result<(), Error> {
+        let status = Command::new("ip")
+            .args(["route", "flush", "dev", self.name.as_str()])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+        check_status(status, "ip")?;
+        Ok(())
+    }
+
+    fn wg_conf(&self, verb: &str, config: &InterfaceConfig) -> Result<(), Error> {
+        let mut tmp = NamedTempFile::new()?;
+        config.write_wireguard_config(tmp.as_file_mut())?;
+        let status = Command::new("wg")
+            .args([
+                OsStr::new(verb),
+                OsStr::new(self.name.as_str()),
+                tmp.path().as_os_str(),
+            ])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
+        check_status(status, "wg")?;
+        Ok(())
+    }
+}
 
 pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, Error> {
     let output = Command::new("wg")
@@ -22,7 +157,7 @@ pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, Error> 
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-    check_status(&output, "wg")?;
+    check_output(&output, "wg")?;
     let output = String::from_utf8(output.stdout).map_err(Error::map)?;
     FromBase64::from_base64(output.trim()).map_err(Error::map)
 }
@@ -37,7 +172,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-    check_status(&output, "wg")?;
+    check_output(&output, "wg")?;
     let output = String::from_utf8(output.stdout).map_err(Error::map)?;
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
     let mut relay_ip_addr: Option<IpAddr> = None;
@@ -97,7 +232,19 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     Ok((relay_ip_addr, public_keys))
 }
 
-fn check_status(output: &Output, command: &str) -> Result<(), Error> {
+fn check_status(status: ExitStatus, command: &str) -> Result<(), Error> {
+    if !status.success() {
+        Err(format_error!(
+            "`{}` failed: {}",
+            command,
+            status_to_string(status)
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_output(output: &Output, command: &str) -> Result<(), Error> {
     if !output.status.success() {
         Err(format_error!(
             "`{}` failed: {}: {}",
