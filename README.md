@@ -29,3 +29,58 @@ To summarize:
 
 
 # Installation
+
+
+## Relay
+
+Run these commands on the server with a public IP.
+
+```bash
+# generate the configuration file
+umask 077
+cat >/etc/wgx.conf <<EOF
+[Relay]
+PrivateKey = $(wg genkey)
+AllowedPublicKeys = # comma-separated list of hub's and spokes' public keys
+EOF
+
+# run the relay in the background
+docker run \
+    --rm \
+    --name wgx \
+    --volume /etc/wgx.conf:/etc/wgx.conf \
+    --network host \
+    --restart always \
+    --detach \
+    docker.io/igankevich/wgx:latest \
+    /bin/wgxd /etc/wgx.conf
+
+# alias wgx command-line client
+alias wgx='docker exec wgx /bin/wgx'
+
+# print status
+wgx status
+
+# print active sessions
+wgx sessions
+```
+
+
+## Hub
+
+Run this command on the hub (a Wireguard peer to which every other peer is connected).
+
+```bash
+# configure relay
+docker run \
+    -it \
+    --rm \
+    --network host \
+    docker.io/igankevich/wgx:latest \
+    /bin/wgx-hub join wg0 RELAY-IP
+# here wg0 - wireguard interface name
+# RELAY-IP  - public ip address of the relay
+```
+
+The command will configure the relay as a peer, and
+then send the public keys of all the other peers to the relay for routing.
