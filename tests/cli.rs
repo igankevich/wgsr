@@ -15,7 +15,7 @@ fn running() {
 fn status() {
     let wgxd = Wgxd::new();
     wgxd.wait_until_started();
-    let output = wgxd.wgx(["status"]).output().unwrap();
+    let output = wgxd.wgx(["relay", "status"]).output().unwrap();
     assert_output!(output);
 }
 
@@ -23,7 +23,7 @@ fn status() {
 fn export() {
     let wgxd = Wgxd::new();
     wgxd.wait_until_started();
-    let output = wgxd.wgx(["export"]).output().unwrap();
+    let output = wgxd.wgx(["relay", "export"]).output().unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert!(!output.stdout.is_empty());

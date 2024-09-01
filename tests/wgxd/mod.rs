@@ -57,7 +57,7 @@ impl Wgxd {
     pub fn wait_until_started(&self) {
         const NUM_SECONDS: usize = 7;
         for i in 1..=NUM_SECONDS {
-            let output = self.wgx(["running"]).output().unwrap();
+            let output = self.wgx(["relay", "running"]).output().unwrap();
             if output.status.success() {
                 return;
             }
