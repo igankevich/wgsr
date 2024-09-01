@@ -46,11 +46,10 @@ EOF
 
 # run the relay in the background
 docker run \
-    --rm \
     --name wgx \
     --volume /etc/wgx.conf:/etc/wgx.conf \
     --network host \
-    --restart always \
+    --restart unless-stopped \
     --detach \
     docker.io/igankevich/wgx:latest \
     /bin/wgxd /etc/wgx.conf
@@ -79,7 +78,7 @@ docker run \
     docker.io/igankevich/wgx:latest \
     /bin/wgx-hub join wg0 RELAY-IP
 # here wg0 - wireguard interface name
-# RELAY-IP  - public ip address of the relay
+# RELAY-IP - public ip address of the relay
 ```
 
 The command will configure the relay as a peer, and
