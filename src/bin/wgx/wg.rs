@@ -4,8 +4,6 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::process::Command;
-use std::process::ExitStatus;
-use std::process::Output;
 use std::process::Stdio;
 
 use ipnet::IpNet;
@@ -16,6 +14,7 @@ use wgx::ToBase64;
 use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 
 use crate::format_error;
+use crate::CommandHR;
 use crate::Error;
 use crate::InterfaceConfig;
 
@@ -52,38 +51,30 @@ impl Wg {
     }
 
     fn ip_link_add(&self) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args(["link", "add", self.name.as_str(), "type", "wireguard"])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn ip_link_delete(&self) -> Result<(), Error> {
         Command::new("ip")
             .args(["link", "delete", self.name.as_str()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
+            .status_silent_hr()?;
         Ok(())
     }
 
     fn ip_link_set_up(&self) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args(["link", "set", self.name.as_str(), "up"])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn ip_address_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args([
                 "address",
                 "add",
@@ -92,24 +83,20 @@ impl Wg {
                 self.name.as_str(),
             ])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn ip_address_flush(&self) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args(["address", "flush", "dev", self.name.as_str()])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn ip_route_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args([
                 "route",
                 "add",
@@ -118,35 +105,29 @@ impl Wg {
                 self.name.as_str(),
             ])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn ip_route_flush(&self) -> Result<(), Error> {
-        let status = Command::new("ip")
+        Command::new("ip")
             .args(["route", "flush", "dev", self.name.as_str()])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `ip`: {}", e))?;
-        check_status(status, "ip")?;
+            .status_hr()?;
         Ok(())
     }
 
     fn wg_conf(&self, verb: &str, config: &InterfaceConfig) -> Result<(), Error> {
         let mut tmp = NamedTempFile::new()?;
         config.write_wireguard_config(tmp.as_file_mut())?;
-        let status = Command::new("wg")
+        Command::new("wg")
             .args([
                 OsStr::new(verb),
                 OsStr::new(self.name.as_str()),
                 tmp.path().as_os_str(),
             ])
             .stdin(Stdio::null())
-            .status()
-            .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-        check_status(status, "wg")?;
+            .status_hr()?;
         Ok(())
     }
 }
@@ -155,9 +136,7 @@ pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, Error> 
     let output = Command::new("wg")
         .args(["show", wg_interface, "public-key"])
         .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-    check_output(&output, "wg")?;
+        .output_hr()?;
     let output = String::from_utf8(output.stdout).map_err(Error::map)?;
     FromBase64::from_base64(output.trim()).map_err(Error::map)
 }
@@ -170,9 +149,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     let output = Command::new("wg")
         .args(["show", wg_interface, "allowed-ips"])
         .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-    check_output(&output, "wg")?;
+        .output_hr()?;
     let output = String::from_utf8(output.stdout).map_err(Error::map)?;
     let mut public_keys: HashSet<PublicKey> = HashSet::new();
     let mut relay_ip_addr: Option<IpAddr> = None;
@@ -195,7 +172,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
     let inner_ip_addr_str = format!("{}/32", DEFAULT_RELAY_INNER_IP_ADDR);
     let relay_ip_addr: IpAddr = match relay_ip_addr {
         None => {
-            let status = Command::new("wg")
+            Command::new("wg")
                 .args([
                     "set",
                     wg_interface,
@@ -208,11 +185,7 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
                     "persistent-keepalive",
                     DEFAULT_PERSISTENT_KEEPALIVE.as_secs().to_string().as_str(),
                 ])
-                .status()
-                .map_err(|e| format_error!("failed to execute `wg`: {}", e))?;
-            if !status.success() {
-                return Err(format_error!("`wg` failed: {}", status_to_string(status)));
-            }
+                .status_hr()?;
             DEFAULT_RELAY_INNER_IP_ADDR.into()
         }
         Some(relay_ip_addr) => relay_ip_addr,
@@ -225,43 +198,8 @@ pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
             "dev",
             wg_interface,
         ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .status()?;
+        .status_silent_hr()?;
     Ok((relay_ip_addr, public_keys))
-}
-
-fn check_status(status: ExitStatus, command: &str) -> Result<(), Error> {
-    if !status.success() {
-        Err(format_error!(
-            "`{}` failed: {}",
-            command,
-            status_to_string(status)
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn check_output(output: &Output, command: &str) -> Result<(), Error> {
-    if !output.status.success() {
-        Err(format_error!(
-            "`{}` failed: {}: {}",
-            command,
-            status_to_string(output.status),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn status_to_string(status: ExitStatus) -> String {
-    match status.code() {
-        Some(code) => format!("exited with status code {}", code),
-        None => "terminated by signal".to_string(),
-    }
 }
 
 const DEFAULT_RELAY_INNER_IP_ADDR: Ipv4Addr = Ipv4Addr::new(10, 107, 111, 116);

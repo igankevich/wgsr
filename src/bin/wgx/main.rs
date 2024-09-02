@@ -25,6 +25,7 @@ use wgx::DEFAULT_LISTEN_PORT;
 use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
+use self::command_hr::*;
 use self::endpoint::*;
 use self::error::*;
 use self::hub_config::*;
@@ -34,6 +35,7 @@ use self::unix::*;
 use self::wg::*;
 use self::wgx_client::*;
 
+mod command_hr;
 mod endpoint;
 mod error;
 mod hub_config;
