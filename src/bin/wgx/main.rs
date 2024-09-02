@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::str::FromStr;
+use std::time::Duration;
 use std::time::SystemTime;
 
 use clap::CommandFactory;
@@ -13,6 +14,7 @@ use clap::Subcommand;
 use colored::Colorize;
 use qrencode::EcLevel;
 use qrencode::QrCode;
+use wgproto::PresharedKey;
 use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgx::FromBase64;
@@ -26,9 +28,9 @@ use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
 use self::command_hr::*;
+use self::config::*;
 use self::endpoint::*;
 use self::error::*;
-use self::hub_config::*;
 use self::qrcode::*;
 use self::units::*;
 use self::unix::*;
@@ -36,9 +38,9 @@ use self::wg::*;
 use self::wgx_client::*;
 
 mod command_hr;
+mod config;
 mod endpoint;
 mod error;
-mod hub_config;
 mod qrcode;
 mod units;
 mod unix;
@@ -141,18 +143,6 @@ enum HubCommand {
         #[arg(value_name = "IP[:PORT]")]
         endpoint: String,
     },
-    /// Generate spoke configuration.
-    Export {
-        /// Export as QR-code.
-        #[clap(long, action)]
-        qr: bool,
-        /// Wireguard network interface name.
-        #[arg(value_name = "NAME")]
-        interface: String,
-        /// Relay's endpoint.
-        #[arg(value_name = "IP[:PORT]")]
-        endpoint: String,
-    },
     /// Generate hub configuration.
     Init,
     /// Set up Wireguard interface.
@@ -161,16 +151,11 @@ enum HubCommand {
     Stop,
     /// Reload Wireguard configuration.
     Reload,
-    /// Add new peer.
+    /// Add new spoke.
     Add {
-        /// Relay.
-        #[arg(
-            short = 'r',
-            long = "relay",
-            value_name = "HOST[:PORT]",
-            value_parser = value_parser::<Endpoint>
-        )]
-        relay: Option<Endpoint>,
+        /// Export as QR-code.
+        #[clap(long, action)]
+        qr: bool,
     },
 }
 
@@ -307,78 +292,6 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Export {
-                qr,
-                interface,
-                endpoint: endpoint_str,
-            } => {
-                let _config = Config::default();
-                let endpoint: Endpoint = endpoint_str.parse()?;
-                let socket_addr = endpoint
-                    .to_socket_addr()?
-                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
-                let mut client = WgxClient::new(socket_addr)?;
-                let relay_public_key = client.retry(|client| client.get_public_key())?;
-                let mut config = String::with_capacity(4096);
-                let wg_endpoint = endpoint.to_string();
-                use std::fmt::Write;
-                // interface
-                writeln!(&mut config, "[Interface]")?;
-                writeln!(
-                    &mut config,
-                    "PrivateKey = {}",
-                    PrivateKey::random().to_base64()
-                )?;
-                writeln!(&mut config, "Address = TODO")?;
-                writeln!(&mut config)?;
-                // hub
-                writeln!(&mut config, "[Peer]")?;
-                writeln!(
-                    &mut config,
-                    "PublicKey = {}",
-                    get_wg_public_key(&interface)?.to_base64()
-                )?;
-                writeln!(&mut config, "Endpoint = {}", wg_endpoint)?;
-                writeln!(
-                    &mut config,
-                    "PersistentKeepalive = {}",
-                    DEFAULT_PERSISTENT_KEEPALIVE.as_secs()
-                )?;
-                writeln!(&mut config, "AllowedIPs = TODO")?;
-                writeln!(&mut config)?;
-                // relay
-                writeln!(&mut config, "[Peer]")?;
-                writeln!(&mut config, "PublicKey = {}", relay_public_key.to_base64())?;
-                writeln!(&mut config, "Endpoint = {}", wg_endpoint)?;
-                writeln!(
-                    &mut config,
-                    "PersistentKeepalive = {}",
-                    DEFAULT_PERSISTENT_KEEPALIVE.as_secs()
-                )?;
-                writeln!(&mut config, "AllowedIPs =")?;
-                let config = if qr {
-                    // remove comments and empty lines
-                    let mut short_config = String::with_capacity(config.len());
-                    for line in config.lines() {
-                        let line = match line.find('#') {
-                            Some(i) => &line[..i],
-                            None => line,
-                        }
-                        .trim();
-                        if !line.is_empty() {
-                            short_config.push_str(line);
-                            short_config.push('\n');
-                        }
-                    }
-                    let qrcode =
-                        QrCode::with_error_correction_level(short_config.as_bytes(), EcLevel::H)?;
-                    qrcode_to_string(qrcode)
-                } else {
-                    config
-                };
-                print!("{}", config);
-                Ok(ExitCode::SUCCESS)
-            }
             HubCommand::Init => {
                 let config = Config::load(config_file.as_path())?;
                 config.save(config_file.as_path())?;
@@ -392,7 +305,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 let wg = Wg::new(config.interface_name);
                 wg.stop()?;
-                wg.start(&config.interface)?;
+                wg.start(&config.interface, &config.peers)?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Stop => {
@@ -404,11 +317,68 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             HubCommand::Reload => {
                 let config = Config::load(config_file.as_path())?;
                 let wg = Wg::new(config.interface_name);
-                wg.reload(&config.interface)?;
+                wg.reload(&config.interface, &config.peers)?;
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Add { relay: _ } => {
-                // TODO
+            HubCommand::Add { qr } => {
+                let mut config = Config::load(config_file.as_path())?;
+                let private_key = PrivateKey::random();
+                let public_key: PublicKey = (&private_key).into();
+                let preshared_key = PresharedKey::random();
+                let mut wg_config: Vec<u8> = Vec::with_capacity(4096);
+                InterfaceConfig {
+                    private_key,
+                    address: config
+                        .random_ip_address()
+                        .ok_or_else(|| format_error!("exhausted available IP addresses"))?,
+                    fwmark: Default::default(),
+                    listen_port: Default::default(),
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                let relay_endpoint = config.relay.clone().ok_or_else(|| {
+                    format_error!("no `DefaultRelay` is specified in the configuration")
+                })?;
+                PeerConfig {
+                    public_key: (&config.interface.private_key).into(),
+                    preshared_key: PresharedKey::random(),
+                    allowed_ips: Some(allowed_ip_any()),
+                    endpoint: Some(relay_endpoint.clone()),
+                    persistent_keepalive: Duration::ZERO,
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                let relay_socket_addr = relay_endpoint
+                    .to_socket_addr()?
+                    .ok_or_else(|| format!("failed to resolve `{}`", relay_endpoint))?;
+                let mut client = WgxClient::new(relay_socket_addr)?;
+                let relay_public_key = client.retry(|client| client.get_public_key())?;
+                let ip_address = config
+                    .random_ip_address()
+                    .ok_or_else(|| format_error!("exhausted available IP addresses"))?;
+                PeerConfig {
+                    public_key: relay_public_key,
+                    preshared_key: preshared_key.clone(),
+                    allowed_ips: None,
+                    endpoint: Some(relay_endpoint),
+                    persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                config.peers.push(PeerConfig {
+                    public_key,
+                    preshared_key,
+                    allowed_ips: Some(ip_address),
+                    endpoint: None,
+                    persistent_keepalive: Duration::ZERO,
+                });
+                config.save(config_file)?;
+                if qr {
+                    let qrcode = QrCode::with_error_correction_level(&wg_config, EcLevel::H)?;
+                    print!("{}", qrcode_to_string(qrcode));
+                } else {
+                    std::io::stdout().write_all(&wg_config)?;
+                }
                 Ok(ExitCode::SUCCESS)
             }
         },
@@ -530,12 +500,4 @@ impl Display for ColoredDuration {
         }
         write!(f, " {}", self.0.unit.cyan())
     }
-}
-
-fn value_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Send + 'static>>
-where
-    T: FromStr,
-    T::Err: ToString,
-{
-    Ok(s.parse().map_err(|e: T::Err| e.to_string())?)
 }

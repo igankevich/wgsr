@@ -17,6 +17,7 @@ use crate::format_error;
 use crate::CommandHR;
 use crate::Error;
 use crate::InterfaceConfig;
+use crate::PeerConfig;
 
 pub(crate) struct Wg {
     name: String,
@@ -27,21 +28,29 @@ impl Wg {
         Self { name }
     }
 
-    pub(crate) fn start(&self, config: &InterfaceConfig) -> Result<(), Error> {
+    pub(crate) fn start(
+        &self,
+        interface: &InterfaceConfig,
+        peers: &[PeerConfig],
+    ) -> Result<(), Error> {
         self.ip_link_add()?;
         self.ip_link_set_up()?;
-        self.ip_address_add(config)?;
-        self.ip_route_add(config)?;
-        self.wg_conf("setconf", config)?;
+        self.ip_address_add(interface)?;
+        self.ip_route_add(interface)?;
+        self.wg_conf("setconf", interface, peers)?;
         Ok(())
     }
 
-    pub(crate) fn reload(&self, config: &InterfaceConfig) -> Result<(), Error> {
+    pub(crate) fn reload(
+        &self,
+        interface: &InterfaceConfig,
+        peers: &[PeerConfig],
+    ) -> Result<(), Error> {
         self.ip_address_flush()?;
-        self.ip_address_add(config)?;
+        self.ip_address_add(interface)?;
         self.ip_route_flush()?;
-        self.ip_route_add(config)?;
-        self.wg_conf("syncconf", config)?;
+        self.ip_route_add(interface)?;
+        self.wg_conf("syncconf", interface, peers)?;
         Ok(())
     }
 
@@ -73,12 +82,12 @@ impl Wg {
         Ok(())
     }
 
-    fn ip_address_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
+    fn ip_address_add(&self, interface: &InterfaceConfig) -> Result<(), Error> {
         Command::new("ip")
             .args([
                 "address",
                 "add",
-                config.address.to_string().as_str(),
+                interface.address.to_string().as_str(),
                 "dev",
                 self.name.as_str(),
             ])
@@ -95,12 +104,12 @@ impl Wg {
         Ok(())
     }
 
-    fn ip_route_add(&self, config: &InterfaceConfig) -> Result<(), Error> {
+    fn ip_route_add(&self, interface: &InterfaceConfig) -> Result<(), Error> {
         Command::new("ip")
             .args([
                 "route",
                 "add",
-                config.address.network().to_string().as_str(),
+                interface.address.network().to_string().as_str(),
                 "dev",
                 self.name.as_str(),
             ])
@@ -117,9 +126,17 @@ impl Wg {
         Ok(())
     }
 
-    fn wg_conf(&self, verb: &str, config: &InterfaceConfig) -> Result<(), Error> {
+    fn wg_conf(
+        &self,
+        verb: &str,
+        interface: &InterfaceConfig,
+        peers: &[PeerConfig],
+    ) -> Result<(), Error> {
         let mut tmp = NamedTempFile::new()?;
-        config.write_wireguard_config(tmp.as_file_mut())?;
+        interface.write_wireguard_config(tmp.as_file_mut())?;
+        for peer in peers.iter() {
+            peer.write_wireguard_config(tmp.as_file_mut())?;
+        }
         Command::new("wg")
             .args([
                 OsStr::new(verb),
@@ -130,15 +147,6 @@ impl Wg {
             .status_hr()?;
         Ok(())
     }
-}
-
-pub(crate) fn get_wg_public_key(wg_interface: &str) -> Result<PublicKey, Error> {
-    let output = Command::new("wg")
-        .args(["show", wg_interface, "public-key"])
-        .stdin(Stdio::null())
-        .output_hr()?;
-    let output = String::from_utf8(output.stdout).map_err(Error::map)?;
-    FromBase64::from_base64(output.trim()).map_err(Error::map)
 }
 
 pub(crate) fn get_relay_ip_addr_and_peers_public_keys(

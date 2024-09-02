@@ -26,6 +26,16 @@ impl Endpoint {
                 .next()),
         }
     }
+
+    pub(crate) fn into_endpoint_with_port(self) -> Self {
+        match self {
+            Self::IpAddr(x) => Self::SocketAddr(SocketAddr::new(x, DEFAULT_LISTEN_PORT)),
+            Self::DnsName(x) => Self::DnsNameWithPort(DnsNameWithPort {
+                name: format!("{}:{}", x, DEFAULT_LISTEN_PORT),
+            }),
+            other => other,
+        }
+    }
 }
 
 impl FromStr for Endpoint {
