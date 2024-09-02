@@ -14,6 +14,7 @@ use wgx::FromBase64;
 use wgx::ToBase64;
 
 use crate::format_error;
+use crate::Endpoint;
 use crate::Error;
 
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/hub.conf";
@@ -22,6 +23,7 @@ type FwMark = u32;
 pub(crate) struct Config {
     pub(crate) interface: InterfaceConfig,
     pub(crate) interface_name: String,
+    pub(crate) default_relay: Option<Endpoint>,
 }
 
 impl Config {
@@ -100,6 +102,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             interface_name: "wgx".into(),
+            default_relay: None,
             interface: InterfaceConfig {
                 private_key: PrivateKey::random(),
                 address: default_interface_address(),
@@ -117,8 +120,13 @@ fn default_interface_address() -> IpNet {
 
 impl Display for Config {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "{}", self.interface)?;
+        writeln!(f, "[Hub]")?;
         writeln!(f, "InterfaceName = {}", self.interface_name)?;
+        if let Some(default_relay) = self.default_relay.as_ref() {
+            writeln!(f, "DefaultRelay = {}", default_relay)?;
+        }
+        writeln!(f)?;
+        writeln!(f, "{}", self.interface)?;
         Ok(())
     }
 }

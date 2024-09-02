@@ -4,6 +4,7 @@ use std::fmt::Formatter;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::time::SystemTime;
 
 use clap::CommandFactory;
@@ -21,7 +22,6 @@ use wgx::Status;
 use wgx::ToBase64;
 use wgx::UnixRequest;
 use wgx::UnixResponse;
-use wgx::DEFAULT_LISTEN_PORT;
 use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
@@ -63,15 +63,7 @@ struct Args {
         default_value = DEFAULT_UNIX_SOCKET_PATH
     )]
     unix_socket_path: PathBuf,
-    /// Configuration file path.
-    #[arg(
-        short = 'c',
-        long = "config",
-        value_name = "path",
-        default_value = DEFAULT_CONFIGURATION_FILE_PATH
-    )]
-    config_file: PathBuf,
-    /// RelayCommand to run.
+    /// Subcommand to run.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -82,8 +74,18 @@ enum Command {
     #[command(subcommand)]
     Relay(RelayCommand),
     /// Hub commands.
-    #[command(subcommand)]
-    Hub(HubCommand),
+    Hub {
+        /// Configuration file path.
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "path",
+            default_value = DEFAULT_CONFIGURATION_FILE_PATH
+        )]
+        config_file: PathBuf,
+        #[command(subcommand)]
+        command: HubCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,10 +153,25 @@ enum HubCommand {
         #[arg(value_name = "IP[:PORT]")]
         endpoint: String,
     },
+    /// Generate hub configuration.
     Init,
+    /// Set up Wireguard interface.
     Start,
+    /// Tear down Wireguard interface.
     Stop,
+    /// Reload Wireguard configuration.
     Reload,
+    /// Add new peer.
+    Add {
+        /// Relay.
+        #[arg(
+            short = 'r',
+            long = "relay",
+            value_name = "HOST[:PORT]",
+            value_parser = value_parser::<Endpoint>
+        )]
+        relay: Option<Endpoint>,
+    },
 }
 
 fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
@@ -221,13 +238,16 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
-        Some(Command::Hub(command)) => match command {
+        Some(Command::Hub {
+            config_file,
+            command,
+        }) => match command {
             HubCommand::GetPublicKey {
                 endpoint: endpoint_str,
             } => {
                 let endpoint: Endpoint = endpoint_str.parse()?;
                 let endpoint = endpoint
-                    .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                    .to_socket_addr()?
                     .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
                 let mut client = WgxClient::new(endpoint)?;
                 let public_key = client.retry(|client| client.get_public_key())?;
@@ -253,7 +273,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             } => {
                 let endpoint: Endpoint = endpoint_str.parse()?;
                 let endpoint = endpoint
-                    .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                    .to_socket_addr()?
                     .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
                 let mut client = WgxClient::new(endpoint)?;
                 let relay_public_key = client.retry(|client| client.get_public_key())?;
@@ -269,7 +289,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 let endpoint = Endpoint::IpAddr(relay_ip_addr);
                 let endpoint = endpoint
-                    .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                    .to_socket_addr()?
                     .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
                 let mut client = WgxClient::new(endpoint)?;
                 client.retry(|client| client.set_peers(&peers_public_keys))?;
@@ -295,12 +315,12 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let _config = Config::default();
                 let endpoint: Endpoint = endpoint_str.parse()?;
                 let socket_addr = endpoint
-                    .to_socket_addr(DEFAULT_LISTEN_PORT)?
+                    .to_socket_addr()?
                     .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
                 let mut client = WgxClient::new(socket_addr)?;
                 let relay_public_key = client.retry(|client| client.get_public_key())?;
                 let mut config = String::with_capacity(4096);
-                let wg_endpoint = endpoint.to_string(DEFAULT_LISTEN_PORT);
+                let wg_endpoint = endpoint.to_string();
                 use std::fmt::Write;
                 // interface
                 writeln!(&mut config, "[Interface]")?;
@@ -360,12 +380,12 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Init => {
-                let config = Config::load(args.config_file.as_path())?;
-                config.save(args.config_file.as_path())?;
+                let config = Config::load(config_file.as_path())?;
+                config.save(config_file.as_path())?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Start => {
-                let config_file = args.config_file.as_path();
+                let config_file = config_file.as_path();
                 let config = Config::load(config_file)?;
                 if !config_file.exists() {
                     config.save(config_file)?;
@@ -376,15 +396,19 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Stop => {
-                let config = Config::load(args.config_file.as_path())?;
+                let config = Config::load(config_file.as_path())?;
                 let wg = Wg::new(config.interface_name);
                 wg.stop()?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Reload => {
-                let config = Config::load(args.config_file.as_path())?;
+                let config = Config::load(config_file.as_path())?;
                 let wg = Wg::new(config.interface_name);
                 wg.reload(&config.interface)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Add { relay: _ } => {
+                // TODO
                 Ok(ExitCode::SUCCESS)
             }
         },
@@ -506,4 +530,12 @@ impl Display for ColoredDuration {
         }
         write!(f, " {}", self.0.unit.cyan())
     }
+}
+
+fn value_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Send + 'static>>
+where
+    T: FromStr,
+    T::Err: ToString,
+{
+    Ok(s.parse().map_err(|e: T::Err| e.to_string())?)
 }

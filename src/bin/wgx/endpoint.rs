@@ -1,8 +1,13 @@
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::str::FromStr;
 
+use wgx::DEFAULT_LISTEN_PORT;
+
+#[derive(Clone)]
 pub(crate) enum Endpoint {
     SocketAddr(SocketAddr),
     IpAddr(IpAddr),
@@ -11,24 +16,14 @@ pub(crate) enum Endpoint {
 }
 
 impl Endpoint {
-    pub(crate) fn to_socket_addr(
-        &self,
-        default_port: u16,
-    ) -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
+    pub(crate) fn to_socket_addr(&self) -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
         match self {
             Self::SocketAddr(x) => Ok(x.to_socket_addrs()?.next()),
-            Self::IpAddr(x) => Ok(Some(SocketAddr::new(*x, default_port))),
+            Self::IpAddr(x) => Ok(Some(SocketAddr::new(*x, DEFAULT_LISTEN_PORT))),
             Self::DnsNameWithPort(x) => Ok(x.name.to_socket_addrs()?.next()),
-            Self::DnsName(x) => Ok(format!("{}:{}", x, default_port).to_socket_addrs()?.next()),
-        }
-    }
-
-    pub(crate) fn to_string(&self, default_port: u16) -> String {
-        match self {
-            Self::SocketAddr(x) => x.to_string(),
-            Self::IpAddr(x) => format!("{}:{}", x, default_port),
-            Self::DnsNameWithPort(x) => x.name.clone(),
-            Self::DnsName(x) => format!("{}:{}", x, default_port),
+            Self::DnsName(x) => Ok(format!("{}:{}", x, DEFAULT_LISTEN_PORT)
+                .to_socket_addrs()?
+                .next()),
         }
     }
 }
@@ -49,6 +44,18 @@ impl FromStr for Endpoint {
     }
 }
 
+impl Display for Endpoint {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            Self::SocketAddr(x) => write!(f, "{}", x),
+            Self::IpAddr(x) => write!(f, "{}:{}", x, DEFAULT_LISTEN_PORT),
+            Self::DnsNameWithPort(x) => write!(f, "{}", x.name),
+            Self::DnsName(x) => write!(f, "{}:{}", x, DEFAULT_LISTEN_PORT),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct DnsNameWithPort {
     name: String,
 }
