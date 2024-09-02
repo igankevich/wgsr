@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::SystemTime;
 
+use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
@@ -47,7 +48,6 @@ mod wgx_client;
     about = "Wireguard Relay Extensions.",
     long_about = None,
     trailing_var_arg = true,
-    arg_required_else_help=true
 )]
 struct Args {
     /// Print version.
@@ -71,7 +71,7 @@ struct Args {
     config_file: PathBuf,
     /// RelayCommand to run.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -165,7 +165,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     match args.command {
-        Command::Relay(command) => match command {
+        Some(Command::Relay(command)) => match command {
             RelayCommand::Running => {
                 let mut client = UnixClient::new(args.unix_socket_path)?;
                 match client.call(UnixRequest::Running)? {
@@ -219,7 +219,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
-        Command::Hub(command) => match command {
+        Some(Command::Hub(command)) => match command {
             HubCommand::GetPublicKey {
                 endpoint: endpoint_str,
             } => {
@@ -386,6 +386,10 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        None => {
+            eprintln!("{}", Args::command().render_help());
+            Ok(ExitCode::FAILURE)
+        }
     }
 }
 
