@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -7,13 +6,13 @@ use std::process::Command;
 use std::process::Stdio;
 
 use ipnet::IpNet;
-use tempfile::NamedTempFile;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::ToBase64;
 use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 
 use crate::format_error;
+use crate::ChildHR;
 use crate::CommandHR;
 use crate::Error;
 use crate::InterfaceConfig;
@@ -132,19 +131,17 @@ impl Wg {
         interface: &InterfaceConfig,
         peers: &[PeerConfig],
     ) -> Result<(), Error> {
-        let mut tmp = NamedTempFile::new()?;
-        interface.write_wireguard_config(tmp.as_file_mut())?;
-        for peer in peers.iter() {
-            peer.write_wireguard_config(tmp.as_file_mut())?;
+        let mut command = Command::new("wg");
+        command.args([verb, self.name.as_str(), "/dev/stdin"]);
+        command.stdin(Stdio::piped());
+        let mut child = command.spawn_hr()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            interface.write_wireguard_config(&mut stdin)?;
+            for peer in peers.iter() {
+                peer.write_wireguard_config(&mut stdin)?;
+            }
         }
-        Command::new("wg")
-            .args([
-                OsStr::new(verb),
-                OsStr::new(self.name.as_str()),
-                tmp.path().as_os_str(),
-            ])
-            .stdin(Stdio::null())
-            .status_hr()?;
+        child.wait_hr(&command)?;
         Ok(())
     }
 }
