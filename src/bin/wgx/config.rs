@@ -27,6 +27,7 @@ use crate::Error;
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/hub.conf";
 type FwMark = u32;
 
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) struct Config {
     pub(crate) interface: InterfaceConfig,
     pub(crate) peers: Vec<PeerConfig>,
@@ -158,6 +159,12 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        if self.interface_name.is_empty() {
+            return Err(format_error!(
+                "invalid interface name: `{}`",
+                self.interface_name
+            ));
+        }
         let mut public_keys: HashSet<PublicKey> = HashSet::new();
         let mut addresses: HashSet<IpNet> = HashSet::new();
         public_keys.insert((&self.interface.private_key).into());
@@ -299,11 +306,7 @@ impl PeerConfig {
             writeln!(out, "AllowedIPs = {}", allowed_ips)?;
         }
         if let Some(endpoint) = self.endpoint.as_ref() {
-            writeln!(
-                out,
-                "Endpoint = {}",
-                endpoint.clone().into_endpoint_with_port()
-            )?;
+            writeln!(out, "Endpoint = {}", endpoint.to_endpoint_with_port())?;
         }
         if self.persistent_keepalive != Duration::ZERO {
             writeln!(
@@ -335,5 +338,140 @@ impl Display for PeerConfig {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use arbitrary::Arbitrary;
+    use arbitrary::Unstructured;
+    use arbtest::arbtest;
+    use tempfile::NamedTempFile;
+
+    use super::*;
+
+    #[test]
+    fn save_load() {
+        arbtest(|u| {
+            let expected: Config = u.arbitrary()?;
+            let file = NamedTempFile::new().unwrap();
+            expected.save(file.path()).unwrap();
+            let actual = Config::load(file.path()).unwrap();
+            assert_eq!(expected, actual);
+            Ok(())
+        });
+    }
+
+    impl<'a> Arbitrary<'a> for Config {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                interface_name: arbitrary_interface_name(u)?,
+                relay: u.arbitrary()?,
+                interface: u.arbitrary()?,
+                peers: u.arbitrary()?,
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for InterfaceConfig {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                private_key: u.arbitrary::<[u8; 32]>()?.into(),
+                address: arbitrary_ip_net(u)?,
+                fwmark: u.arbitrary()?,
+                listen_port: u.arbitrary()?,
+            })
+        }
+    }
+
+    impl Debug for InterfaceConfig {
+        fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+            f.debug_struct("InterfaceConfig")
+                .field("private_key", &self.private_key.to_base64())
+                .field("address", &self.address)
+                .field("fwmark", &self.fwmark)
+                .field("listen_port", &self.listen_port)
+                .finish()
+        }
+    }
+
+    impl PartialEq for InterfaceConfig {
+        fn eq(&self, other: &Self) -> bool {
+            self.private_key.as_bytes() == other.private_key.as_bytes()
+                && self.address == other.address
+                && self.fwmark == other.fwmark
+                && self.listen_port == other.listen_port
+        }
+    }
+
+    impl Eq for InterfaceConfig {}
+
+    impl<'a> Arbitrary<'a> for PeerConfig {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                public_key: u.arbitrary::<[u8; 32]>()?.into(),
+                preshared_key: u.arbitrary::<[u8; 32]>()?.into(),
+                allowed_ips: u.arbitrary::<Option<ArbitraryIpNet>>()?.map(|x| x.0),
+                endpoint: u.arbitrary()?,
+                persistent_keepalive: Duration::from_secs(u.arbitrary()?),
+            })
+        }
+    }
+
+    impl Debug for PeerConfig {
+        fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+            f.debug_struct("PeerConfig")
+                .field("public_key", &self.public_key.to_base64())
+                .field("preshared_key", &self.preshared_key.to_base64())
+                .field("allowed_ips", &self.allowed_ips)
+                .field("endpoint", &self.endpoint)
+                .field("persistent_keepalive", &self.persistent_keepalive)
+                .finish()
+        }
+    }
+
+    impl PartialEq for PeerConfig {
+        fn eq(&self, other: &Self) -> bool {
+            self.public_key.as_bytes() == other.public_key.as_bytes()
+                && self.preshared_key.as_bytes() == other.preshared_key.as_bytes()
+                && self.allowed_ips == other.allowed_ips
+                && self.endpoint == other.endpoint
+                && self.persistent_keepalive == other.persistent_keepalive
+        }
+    }
+
+    impl Eq for PeerConfig {}
+
+    #[derive(Debug)]
+    struct ArbitraryIpNet(IpNet);
+
+    impl<'a> Arbitrary<'a> for ArbitraryIpNet {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self(arbitrary_ip_net(u)?))
+        }
+    }
+
+    fn arbitrary_ip_net(u: &mut Unstructured<'_>) -> Result<IpNet, arbitrary::Error> {
+        let ipaddr: IpAddr = u.arbitrary()?;
+        let max_prefix_len = match ipaddr {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        let prefix_len = u.int_in_range(0..=max_prefix_len)?;
+        Ok(IpNet::new(ipaddr, prefix_len).unwrap())
+    }
+
+    fn arbitrary_interface_name(u: &mut Unstructured<'_>) -> Result<String, arbitrary::Error> {
+        let name: String = u.arbitrary()?;
+        let mut name: String = name
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || ch == &'-' || ch == &'_')
+            .collect();
+        if name.is_empty() {
+            name = "x".to_string();
+        }
+        Ok(name)
     }
 }

@@ -8,6 +8,7 @@ use std::str::FromStr;
 use wgx::DEFAULT_LISTEN_PORT;
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub(crate) enum Endpoint {
     SocketAddr(SocketAddr),
     IpAddr(IpAddr),
@@ -27,13 +28,14 @@ impl Endpoint {
         }
     }
 
-    pub(crate) fn into_endpoint_with_port(self) -> Self {
+    pub(crate) fn to_endpoint_with_port(&self) -> Self {
         match self {
-            Self::IpAddr(x) => Self::SocketAddr(SocketAddr::new(x, DEFAULT_LISTEN_PORT)),
+            Self::SocketAddr(x) => Self::SocketAddr(*x),
+            Self::IpAddr(x) => Self::SocketAddr(SocketAddr::new(*x, DEFAULT_LISTEN_PORT)),
+            Self::DnsNameWithPort(x) => Self::DnsNameWithPort(x.clone()),
             Self::DnsName(x) => Self::DnsNameWithPort(DnsNameWithPort {
                 name: format!("{}:{}", x, DEFAULT_LISTEN_PORT),
             }),
-            other => other,
         }
     }
 }
@@ -58,14 +60,15 @@ impl Display for Endpoint {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             Self::SocketAddr(x) => write!(f, "{}", x),
-            Self::IpAddr(x) => write!(f, "{}:{}", x, DEFAULT_LISTEN_PORT),
+            Self::IpAddr(x) => write!(f, "{}", x),
             Self::DnsNameWithPort(x) => write!(f, "{}", x.name),
-            Self::DnsName(x) => write!(f, "{}:{}", x, DEFAULT_LISTEN_PORT),
+            Self::DnsName(x) => write!(f, "{}", x),
         }
     }
 }
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug, arbitrary::Arbitrary))]
 pub(crate) struct DnsNameWithPort {
     name: String,
 }
@@ -77,5 +80,37 @@ impl FromStr for DnsNameWithPort {
             Some(_) => Ok(Self { name: other.into() }),
             None => Err(format!("no port in `{}`", other).into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use arbitrary::Arbitrary;
+    use arbitrary::Unstructured;
+
+    use super::*;
+
+    impl<'a> Arbitrary<'a> for Endpoint {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            let i = u.int_in_range(0..=3)?;
+            Ok(match i {
+                0 => Self::SocketAddr(SocketAddr::new(u.arbitrary()?, u.arbitrary()?)),
+                1 => Self::IpAddr(u.arbitrary()?),
+                2 => Self::DnsNameWithPort(DnsNameWithPort {
+                    name: format!("{}:{}", arbitrary_dns_name(u)?, u.arbitrary::<u16>()?),
+                }),
+                _ => Self::DnsName(arbitrary_dns_name(u)?),
+            })
+        }
+    }
+
+    fn arbitrary_dns_name(u: &mut Unstructured<'_>) -> Result<String, arbitrary::Error> {
+        let len = u.arbitrary_len::<char>()?.max(1);
+        let mut name = String::with_capacity(len);
+        for _ in 0..len {
+            name.push(char::from_u32(u.int_in_range(('a' as u32)..=('z' as u32))?).unwrap());
+        }
+        Ok(name)
     }
 }
