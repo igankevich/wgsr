@@ -57,6 +57,14 @@ struct Args {
     /// Print version.
     #[clap(long, action)]
     version: bool,
+    /// Configuration file path.
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "path",
+        default_value = DEFAULT_CONFIGURATION_FILE_PATH
+    )]
+    config_file: PathBuf,
     /// UNIX socket path.
     #[arg(
         short = 's',
@@ -76,18 +84,11 @@ enum Command {
     #[command(subcommand)]
     Relay(RelayCommand),
     /// Hub commands.
-    Hub {
-        /// Configuration file path.
-        #[arg(
-            short = 'c',
-            long = "config",
-            value_name = "path",
-            default_value = DEFAULT_CONFIGURATION_FILE_PATH
-        )]
-        config_file: PathBuf,
-        #[command(subcommand)]
-        command: HubCommand,
-    },
+    #[command(subcommand)]
+    Hub(HubCommand),
+    /// Spoke commands.
+    #[command(subcommand)]
+    Spoke(SpokeCommand),
 }
 
 #[derive(Subcommand)]
@@ -151,11 +152,20 @@ enum HubCommand {
     Stop,
     /// Reload Wireguard configuration.
     Reload,
+}
+
+#[derive(Subcommand)]
+enum SpokeCommand {
     /// Add new spoke.
     Add {
         /// Export as QR-code.
         #[clap(long, action)]
         qr: bool,
+    },
+    /// Remove existing spoke.
+    Remove {
+        /// Public key.
+        public_key: String,
     },
 }
 
@@ -223,10 +233,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
-        Some(Command::Hub {
-            config_file,
-            command,
-        }) => match command {
+        Some(Command::Hub(command)) => match command {
             HubCommand::GetPublicKey {
                 endpoint: endpoint_str,
             } => {
@@ -293,12 +300,13 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Init => {
-                let config = Config::load(config_file.as_path())?;
-                config.save(config_file.as_path())?;
+                let config_file = args.config_file.as_path();
+                let config = Config::load(config_file)?;
+                config.save(config_file)?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Start => {
-                let config_file = config_file.as_path();
+                let config_file = args.config_file.as_path();
                 let config = Config::load(config_file)?;
                 if !config_file.exists() {
                     config.save(config_file)?;
@@ -309,19 +317,21 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Stop => {
-                let config = Config::load(config_file.as_path())?;
+                let config = Config::load(args.config_file.as_path())?;
                 let wg = Wg::new(config.interface_name);
                 wg.stop()?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Reload => {
-                let config = Config::load(config_file.as_path())?;
+                let config = Config::load(args.config_file.as_path())?;
                 let wg = Wg::new(config.interface_name);
                 wg.reload(&config.interface, &config.peers)?;
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Add { qr } => {
-                let mut config = Config::load(config_file.as_path())?;
+        },
+        Some(Command::Spoke(command)) => match command {
+            SpokeCommand::Add { qr } => {
+                let mut config = Config::load(args.config_file.as_path())?;
                 let private_key = PrivateKey::random();
                 let public_key: PublicKey = (&private_key).into();
                 let preshared_key = PresharedKey::random();
@@ -372,12 +382,24 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     endpoint: None,
                     persistent_keepalive: Duration::ZERO,
                 });
-                config.save(config_file)?;
+                config.save(args.config_file.as_path())?;
                 if qr {
                     let qrcode = QrCode::with_error_correction_level(&wg_config, EcLevel::H)?;
                     print!("{}", qrcode_to_string(qrcode));
                 } else {
                     std::io::stdout().write_all(&wg_config)?;
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Remove { public_key } => {
+                let public_key = PublicKey::from_base64(&public_key)?;
+                let config_file = args.config_file.as_path();
+                let mut config = Config::load(config_file)?;
+                let old_len = config.peers.len();
+                config.peers.retain(|peer| peer.public_key != public_key);
+                let new_len = config.peers.len();
+                if old_len != new_len {
+                    config.save(config_file)?;
                 }
                 Ok(ExitCode::SUCCESS)
             }

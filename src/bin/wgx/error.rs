@@ -42,6 +42,12 @@ impl From<bincode::error::EncodeError> for Error {
     }
 }
 
+impl From<wgx::Base64Error> for Error {
+    fn from(other: wgx::Base64Error) -> Self {
+        Self(other.to_string())
+    }
+}
+
 #[macro_export]
 macro_rules! format_error {
     ($($args:expr),*) => {
