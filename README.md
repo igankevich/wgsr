@@ -76,6 +76,8 @@ wgx hub init IP:PORT
 # IP:PORT - public ip address and optional port of the relay
 # add "spoke" peer
 wgx spoke add
+# configure wireguard interface
+wgx hub start
 ```
 
 The command will configure the relay as a peer, and
