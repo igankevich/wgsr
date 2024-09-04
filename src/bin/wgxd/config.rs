@@ -19,7 +19,7 @@ use crate::format_error;
 use crate::parse_config;
 use crate::Error;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx.conf";
+pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/relay.conf";
 
 pub(crate) struct Config {
     pub(crate) private_key: PrivateKey,
@@ -31,7 +31,7 @@ pub(crate) struct Config {
 
 impl Config {
     pub(crate) fn load(path: &Path) -> Result<Self, Error> {
-        match Self::do_open(path) {
+        match Self::do_load(path) {
             Ok(config) => Ok(config),
             Err(Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 Ok(Default::default())
@@ -40,7 +40,7 @@ impl Config {
         }
     }
 
-    fn do_open(path: &Path) -> Result<Self, Error> {
+    fn do_load(path: &Path) -> Result<Self, Error> {
         let mut config: Config = Default::default();
         let mut prev_section: Option<String> = None;
         parse_config(path, |section, key, value, new_section| {

@@ -7,6 +7,8 @@ use wgproto::PublicKey;
 #[derive(Debug)]
 pub struct Base64Error;
 
+impl std::error::Error for Base64Error {}
+
 impl Display for Base64Error {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "base64 i/o error")

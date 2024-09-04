@@ -1,15 +1,20 @@
+use std::fmt::Display;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::path::Path;
 
-use crate::format_error;
-use crate::Error;
+macro_rules! format_error {
+    ($($args:expr),*) => {
+        ::std::io::Error::new(::std::io::ErrorKind::Other, format!($($args),*))
+    };
+}
 
-pub(crate) fn parse_config<F: FnMut(Option<&str>, &str, &str, bool) -> Result<(), Error>>(
-    path: &Path,
-    mut on_key_value: F,
-) -> Result<(), Error> {
+pub fn parse_config<F, E>(path: &Path, mut on_key_value: F) -> Result<(), std::io::Error>
+where
+    F: FnMut(Option<&str>, &str, &str, bool) -> Result<(), E>,
+    E: Display,
+{
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut current_section: Option<String> = None;

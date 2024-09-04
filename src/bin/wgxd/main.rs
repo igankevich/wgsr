@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use self::config::*;
-use self::config_parser::*;
 use self::dispatcher::*;
 use self::error::*;
 use self::logger::*;
@@ -14,9 +13,9 @@ use crate::Config;
 use crate::Error;
 use crate::Logger;
 use crate::DEFAULT_CONFIGURATION_FILE_PATH;
+use wgx::parse_config;
 
 mod config;
-mod config_parser;
 mod dispatcher;
 mod error;
 mod logger;

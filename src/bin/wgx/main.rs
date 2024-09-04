@@ -1,15 +1,21 @@
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::num::NonZeroU16;
+use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 use std::time::SystemTime;
 
+use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
 use qrencode::EcLevel;
 use qrencode::QrCode;
+use wgproto::PresharedKey;
+use wgproto::PrivateKey;
 use wgproto::PublicKey;
 use wgx::FromBase64;
 use wgx::Routes;
@@ -18,30 +24,49 @@ use wgx::Status;
 use wgx::ToBase64;
 use wgx::UnixRequest;
 use wgx::UnixResponse;
+use wgx::DEFAULT_PERSISTENT_KEEPALIVE;
 use wgx::DEFAULT_UNIX_SOCKET_PATH;
 
+use self::command_hr::*;
+use self::config::*;
+use self::endpoint::*;
 use self::error::*;
+use self::interface_name::*;
 use self::qrcode::*;
 use self::units::*;
 use self::unix::*;
-use crate::format_bytes;
-use crate::format_duration;
+use self::wg::*;
+use self::wgx_client::*;
 
+mod command_hr;
+mod config;
+mod endpoint;
 mod error;
+mod interface_name;
 mod qrcode;
 mod units;
 mod unix;
+mod wg;
+mod wgx_client;
 
 #[derive(Parser)]
 #[command(
-    about = "Wireguard Secure Relay.",
+    about = "Wireguard Relay Extensions.",
     long_about = None,
-    trailing_var_arg = true
+    trailing_var_arg = true,
 )]
 struct Args {
     /// Print version.
     #[clap(long, action)]
     version: bool,
+    /// Configuration file path.
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "path",
+        default_value = DEFAULT_CONFIGURATION_FILE_PATH
+    )]
+    config_file: PathBuf,
     /// UNIX socket path.
     #[arg(
         short = 's',
@@ -50,13 +75,26 @@ struct Args {
         default_value = DEFAULT_UNIX_SOCKET_PATH
     )]
     unix_socket_path: PathBuf,
-    /// Command to run.
+    /// Subcommand to run.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Relay commands.
+    #[command(subcommand)]
+    Relay(RelayCommand),
+    /// Hub commands.
+    #[command(subcommand)]
+    Hub(HubCommand),
+    /// Spoke commands.
+    #[command(subcommand)]
+    Spoke(SpokeCommand),
+}
+
+#[derive(Subcommand)]
+enum RelayCommand {
     /// Check if wgx daemon is running.
     Running,
     /// Get relay status.
@@ -68,66 +106,8 @@ enum Command {
     Sessions,
     /// Get relay's public key.
     PublicKey,
-    /// Export peer configuration.
-    Export {
-        /// Export as QR-code.
-        #[clap(long, action)]
-        qr: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum RelayCommand {
-    /// Add new relay.
-    Add {
-        /// Listen port.
-        listen_port: Option<NonZeroU16>,
-    },
-    /// Remove existing relay.
-    Rm {
-        /// Listen port.
-        listen_port: NonZeroU16,
-    },
-}
-
-#[derive(Subcommand)]
-enum HubCommand {
-    /// Add new hub.
-    Add {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-    /// Remove existing hub.
-    Rm {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-}
-
-#[derive(Subcommand)]
-enum SpokeCommand {
-    /// Add new hub.
-    Add {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
-    /// Remove existing hub.
-    Rm {
-        /// Relay listen port.
-        listen_port: NonZeroU16,
-        /// Public key.
-        #[arg(value_name = "BASE64", value_parser = base64_parser::<PublicKey>)]
-        public_key: PublicKey,
-    },
+    /// Export hub configuration.
+    Export,
 }
 
 fn main() -> ExitCode {
@@ -140,6 +120,57 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Subcommand)]
+enum HubCommand {
+    /// Get relay's public key.
+    GetPublicKey {
+        /// Relay's endpoint.
+        #[arg(value_name = "IP[:PORT]")]
+        endpoint: String,
+    },
+    /// Send peers' public keys to the relay.
+    SetPeers {
+        /// Relay's internal IP:PORT in Wireguard network.
+        #[arg(value_name = "IP[:PORT]")]
+        relay_socket_addr: SocketAddr,
+        /// Peers' public keys.
+        #[arg(value_name = "PUBLIC-KEY")]
+        public_keys: Vec<String>,
+    },
+    /// Query relay's public key and set peers automatically.
+    Join {
+        /// Wireguard network interface name.
+        #[arg(value_name = "NAME")]
+        interface: String,
+        /// Relay's endpoint.
+        #[arg(value_name = "IP[:PORT]")]
+        endpoint: String,
+    },
+    /// Generate hub configuration.
+    Init,
+    /// Set up Wireguard interface.
+    Start,
+    /// Tear down Wireguard interface.
+    Stop,
+    /// Reload Wireguard configuration.
+    Reload,
+}
+
+#[derive(Subcommand)]
+enum SpokeCommand {
+    /// Add new spoke.
+    Add {
+        /// Export as QR-code.
+        #[clap(long, action)]
+        qr: bool,
+    },
+    /// Remove existing spoke.
+    Remove {
+        /// Public key.
+        public_key: String,
+    },
+}
+
 fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     unsafe {
         libc::umask(0o077);
@@ -150,76 +181,234 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     match args.command {
-        Some(Command::Running) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            match client.call(UnixRequest::Running)? {
-                UnixResponse::Running => Ok(ExitCode::SUCCESS),
-                _ => Ok(ExitCode::FAILURE),
-            }
-        }
-        Some(Command::Status) | None => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let status = match client.call(UnixRequest::Status)? {
-                UnixResponse::Status(status) => status?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_status(&status);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Routes) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let routes = match client.call(UnixRequest::Routes)? {
-                UnixResponse::Routes(routes) => routes?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_routes(&routes);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Sessions) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let sessions = match client.call(UnixRequest::Sessions)? {
-                UnixResponse::Sessions(sessions) => sessions?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            print_sessions(&sessions);
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::PublicKey) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let public_key = match client.call(UnixRequest::PublicKey)? {
-                UnixResponse::PublicKey(result) => result?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            println!("{}", public_key.to_base64());
-            Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Export { qr }) => {
-            let mut client = UnixClient::new(args.unix_socket_path)?;
-            let config = match client.call(UnixRequest::Export)? {
-                UnixResponse::Export(result) => result?,
-                _ => return Ok(ExitCode::FAILURE),
-            };
-            if qr {
-                // remove comments
-                let mut short_config = String::with_capacity(config.len());
-                for line in config.lines() {
-                    let line = match line.find('#') {
-                        Some(i) => &line[..i],
-                        None => line,
-                    }
-                    .trim();
-                    if !line.is_empty() {
-                        short_config.push_str(line);
-                        short_config.push('\n');
-                    }
+        Some(Command::Relay(command)) => match command {
+            RelayCommand::Running => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                match client.call(UnixRequest::Running)? {
+                    UnixResponse::Running => Ok(ExitCode::SUCCESS),
+                    _ => Ok(ExitCode::FAILURE),
                 }
-                let qrcode =
-                    QrCode::with_error_correction_level(short_config.as_bytes(), EcLevel::H)?;
-                print!("{}", qrcode_to_string(qrcode));
-            } else {
-                print!("{}", config);
             }
-            Ok(ExitCode::SUCCESS)
+            RelayCommand::Status => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let status = match client.call(UnixRequest::Status)? {
+                    UnixResponse::Status(status) => status?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_status(&status);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Routes => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let routes = match client.call(UnixRequest::Routes)? {
+                    UnixResponse::Routes(routes) => routes?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_routes(&routes);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Sessions => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let sessions = match client.call(UnixRequest::Sessions)? {
+                    UnixResponse::Sessions(sessions) => sessions?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print_sessions(&sessions);
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::PublicKey => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let public_key = match client.call(UnixRequest::PublicKey)? {
+                    UnixResponse::PublicKey(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                println!("{}", public_key.to_base64());
+                Ok(ExitCode::SUCCESS)
+            }
+            RelayCommand::Export => {
+                let mut client = UnixClient::new(args.unix_socket_path)?;
+                let config = match client.call(UnixRequest::Export)? {
+                    UnixResponse::Export(result) => result?,
+                    _ => return Ok(ExitCode::FAILURE),
+                };
+                print!("{}", config);
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Some(Command::Hub(command)) => match command {
+            HubCommand::GetPublicKey {
+                endpoint: endpoint_str,
+            } => {
+                let endpoint: Endpoint = endpoint_str.parse()?;
+                let endpoint = endpoint
+                    .to_socket_addr()?
+                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+                let mut client = WgxClient::new(endpoint)?;
+                let public_key = client.retry(|client| client.get_public_key())?;
+                println!("{}", public_key.to_base64());
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::SetPeers {
+                relay_socket_addr,
+                public_keys,
+            } => {
+                let public_keys: HashSet<PublicKey> = public_keys
+                    .into_iter()
+                    .map(|x| FromBase64::from_base64(&x))
+                    .collect::<Result<HashSet<PublicKey>, _>>()
+                    .map_err(|_| "invalid public key format")?;
+                let mut client = WgxClient::new(relay_socket_addr)?;
+                client.retry(|client| client.set_peers(&public_keys))?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Join {
+                interface,
+                endpoint: endpoint_str,
+            } => {
+                let endpoint: Endpoint = endpoint_str.parse()?;
+                let endpoint = endpoint
+                    .to_socket_addr()?
+                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+                let mut client = WgxClient::new(endpoint)?;
+                let relay_public_key = client.retry(|client| client.get_public_key())?;
+                eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
+                let (relay_ip_addr, peers_public_keys) = get_relay_ip_addr_and_peers_public_keys(
+                    &interface,
+                    &relay_public_key,
+                    endpoint,
+                )?;
+                eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
+                if peers_public_keys.is_empty() {
+                    return Ok(ExitCode::SUCCESS);
+                }
+                let endpoint = Endpoint::IpAddr(relay_ip_addr);
+                let endpoint = endpoint
+                    .to_socket_addr()?
+                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+                let mut client = WgxClient::new(endpoint)?;
+                client.retry(|client| client.set_peers(&peers_public_keys))?;
+                eprintln!(
+                    "✓ Published peers: {}",
+                    peers_public_keys
+                        .iter()
+                        .fold(String::with_capacity(4096), |mut a, b| {
+                            if !a.is_empty() {
+                                a.push_str(", ");
+                            }
+                            a.push_str(&b.to_base64());
+                            a
+                        })
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Init => {
+                let config_file = args.config_file.as_path();
+                let config = Config::load(config_file)?;
+                config.save(config_file)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Start => {
+                let config_file = args.config_file.as_path();
+                let config = Config::load(config_file)?;
+                if !config_file.exists() {
+                    config.save(config_file)?;
+                }
+                let wg = Wg::new(config.interface_name.0);
+                wg.stop()?;
+                wg.start(&config.interface, &config.peers)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Stop => {
+                let config = Config::load(args.config_file.as_path())?;
+                let wg = Wg::new(config.interface_name.0);
+                wg.stop()?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Reload => {
+                let config = Config::load(args.config_file.as_path())?;
+                let wg = Wg::new(config.interface_name.0);
+                wg.reload(&config.interface, &config.peers)?;
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Some(Command::Spoke(command)) => match command {
+            SpokeCommand::Add { qr } => {
+                let mut config = Config::load(args.config_file.as_path())?;
+                let private_key = PrivateKey::random();
+                let public_key: PublicKey = (&private_key).into();
+                let preshared_key = PresharedKey::random();
+                let mut wg_config: Vec<u8> = Vec::with_capacity(4096);
+                InterfaceConfig {
+                    private_key,
+                    address: config
+                        .random_ip_address()
+                        .ok_or_else(|| format_error!("exhausted available IP addresses"))?,
+                    fwmark: Default::default(),
+                    listen_port: Default::default(),
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                let relay_endpoint = config.relay.clone().ok_or_else(|| {
+                    format_error!("no `DefaultRelay` is specified in the configuration")
+                })?;
+                PeerConfig {
+                    public_key: (&config.interface.private_key).into(),
+                    preshared_key: PresharedKey::random(),
+                    allowed_ips: Some(allowed_ip_any()),
+                    endpoint: Some(relay_endpoint.clone()),
+                    persistent_keepalive: Duration::ZERO,
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                let relay_socket_addr = relay_endpoint
+                    .to_socket_addr()?
+                    .ok_or_else(|| format!("failed to resolve `{}`", relay_endpoint))?;
+                let mut client = WgxClient::new(relay_socket_addr)?;
+                let relay_public_key = client.retry(|client| client.get_public_key())?;
+                let ip_address = config
+                    .random_ip_address()
+                    .ok_or_else(|| format_error!("exhausted available IP addresses"))?;
+                PeerConfig {
+                    public_key: relay_public_key,
+                    preshared_key: preshared_key.clone(),
+                    allowed_ips: None,
+                    endpoint: Some(relay_endpoint),
+                    persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
+                }
+                .write_wireguard_config(&mut wg_config)?;
+                writeln!(&mut wg_config)?;
+                config.peers.push(PeerConfig {
+                    public_key,
+                    preshared_key,
+                    allowed_ips: Some(ip_address),
+                    endpoint: None,
+                    persistent_keepalive: Duration::ZERO,
+                });
+                config.save(args.config_file.as_path())?;
+                if qr {
+                    let qrcode = QrCode::with_error_correction_level(&wg_config, EcLevel::H)?;
+                    print!("{}", qrcode_to_string(qrcode));
+                } else {
+                    std::io::stdout().write_all(&wg_config)?;
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Remove { public_key } => {
+                let public_key = PublicKey::from_base64(&public_key)?;
+                let config_file = args.config_file.as_path();
+                let mut config = Config::load(config_file)?;
+                let old_len = config.peers.len();
+                config.peers.retain(|peer| peer.public_key != public_key);
+                let new_len = config.peers.len();
+                if old_len != new_len {
+                    config.save(config_file)?;
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        None => {
+            eprintln!("{}", Args::command().render_help());
+            Ok(ExitCode::FAILURE)
         }
     }
 }
@@ -311,13 +500,6 @@ fn format_transfer(received: u64, sent: u64) -> String {
         ColoredBytes(format_bytes(received)),
         ColoredBytes(format_bytes(sent))
     )
-}
-
-fn base64_parser<T>(s: &str) -> Result<T, Box<dyn std::error::Error + Sync + Send + 'static>>
-where
-    T: FromBase64,
-{
-    Ok(T::from_base64(s).map_err(|e| e.to_string())?)
 }
 
 struct ColoredBytes(FormatBytes);

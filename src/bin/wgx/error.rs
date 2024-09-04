@@ -4,6 +4,12 @@ use std::fmt::Formatter;
 
 pub struct Error(pub String);
 
+impl Error {
+    pub fn map(other: impl ToString) -> Self {
+        Self(other.to_string())
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -32,6 +38,12 @@ impl From<bincode::error::DecodeError> for Error {
 
 impl From<bincode::error::EncodeError> for Error {
     fn from(other: bincode::error::EncodeError) -> Self {
+        Self(other.to_string())
+    }
+}
+
+impl From<wgx::Base64Error> for Error {
+    fn from(other: wgx::Base64Error) -> Self {
         Self(other.to_string())
     }
 }
