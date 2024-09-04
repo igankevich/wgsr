@@ -38,21 +38,22 @@ Run these commands on the server with a public IP.
 ```bash
 # generate the configuration file
 umask 077
-cat >/etc/wgx.conf <<EOF
+mkdir -p /etc/wgx
+cat >/etc/wgx/relay.conf <<EOF
 [Relay]
 PrivateKey = $(wg genkey)
-AllowedPublicKeys = # comma-separated list of hub's and spokes' public keys
+AllowedPublicKeys = # comma-separated list of hub's and spokes' public keys or "all" to allow all public keys
 EOF
 
 # run the relay in the background
 docker run \
     --name wgx \
-    --volume /etc/wgx.conf:/etc/wgx.conf \
+    --volume /etc/wgx:/etc/wgx \
     --network host \
     --restart unless-stopped \
     --detach \
     docker.io/igankevich/wgx:latest \
-    /bin/wgxd /etc/wgx.conf
+    /bin/wgxd
 
 # alias wgx command-line client
 alias wgx='docker exec wgx /bin/wgx'
@@ -80,5 +81,5 @@ wgx spoke add
 wgx hub start
 ```
 
-The command will configure the relay as a peer, and
+These commands will configure the relay as a peer, and
 then send the public keys of all the other peers to the relay for routing.
