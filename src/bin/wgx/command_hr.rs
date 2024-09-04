@@ -3,14 +3,12 @@ use std::io::ErrorKind;
 use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
-use std::process::Output;
 use std::process::Stdio;
 
 /// A trait that makes `Command` product human-readable errors.
 pub(crate) trait CommandHR {
     fn status_hr(&mut self) -> Result<ExitStatus, Error>;
     fn status_silent_hr(&mut self) -> Result<ExitStatus, Error>;
-    fn output_hr(&mut self) -> Result<Output, Error>;
     fn spawn_hr(&mut self) -> Result<Child, Error>;
 }
 
@@ -27,12 +25,6 @@ impl CommandHR for Command {
             .stderr(Stdio::null());
         let status = self.status().map_err(|e| failed_to_execute(self, e))?;
         Ok(status)
-    }
-
-    fn output_hr(&mut self) -> Result<Output, Error> {
-        let output = self.output().map_err(|e| failed_to_execute(self, e))?;
-        check_output(self, &output)?;
-        Ok(output)
     }
 
     fn spawn_hr(&mut self) -> Result<Child, Error> {
@@ -59,23 +51,6 @@ fn failed_to_execute(command: &Command, e: Error) -> Error {
         ErrorKind::Other,
         format!("failed to execute `{}`: {}", executable, e),
     )
-}
-
-fn check_output(command: &Command, output: &Output) -> Result<(), Error> {
-    if !output.status.success() {
-        let executable = command.get_program().to_string_lossy();
-        Err(Error::new(
-            ErrorKind::Other,
-            format!(
-                "`{}` failed: {}: {}",
-                executable,
-                status_to_string(output.status),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ))
-    } else {
-        Ok(())
-    }
 }
 
 fn check_status(command: &Command, status: ExitStatus) -> Result<(), Error> {

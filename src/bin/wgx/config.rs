@@ -24,6 +24,7 @@ use crate::format_error;
 use crate::Endpoint;
 use crate::Error;
 use crate::InterfaceName;
+use crate::DEFAULT_PERSISTENT_KEEPALIVE;
 
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/hub.conf";
 type FwMark = u32;
@@ -33,7 +34,7 @@ pub(crate) struct Config {
     pub(crate) interface: InterfaceConfig,
     pub(crate) peers: Vec<PeerConfig>,
     pub(crate) interface_name: InterfaceName,
-    pub(crate) relay: Option<Endpoint>,
+    relay: RelayConfig,
 }
 
 impl Config {
@@ -90,7 +91,13 @@ impl Config {
             match section {
                 Some(section @ "Hub") => match key {
                     "InterfaceName" => config.interface_name = value.parse().map_err(Error::map)?,
-                    "Relay" => config.relay = Some(value.parse().map_err(Error::map)?),
+                    "RelayEndpoint" => {
+                        config.relay.endpoint = Some(value.parse().map_err(Error::map)?)
+                    }
+                    "RelayPublicKey" => {
+                        config.relay.public_key =
+                            Some(FromBase64::from_base64(value).map_err(Error::map)?)
+                    }
                     key => return Err(format_error!("unknown key under `{}`: `{}`", section, key)),
                 },
                 Some(section @ "Interface") => match key {
@@ -213,13 +220,74 @@ impl Config {
             }
         }
     }
+
+    pub(crate) fn get_relay_endpoint(&self) -> Option<&Endpoint> {
+        self.relay.endpoint.as_ref()
+    }
+
+    pub(crate) fn get_relay_public_key(&self) -> Option<&PublicKey> {
+        self.relay.public_key.as_ref()
+    }
+
+    pub(crate) fn set_relay(
+        &mut self,
+        endpoint: Option<Endpoint>,
+        public_key: PublicKey,
+    ) -> Result<(), Error> {
+        if endpoint.is_some() {
+            self.peers.retain(|peer| peer.public_key != public_key);
+            self.peers.push(PeerConfig {
+                public_key,
+                preshared_key: [0_u8; 32].into(),
+                allowed_ips: Some(self.random_ip_address().ok_or_else(|| {
+                    format_error!("failed to set relay: exhausted available IP addresses")
+                })?),
+                endpoint: endpoint.clone(),
+                persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
+            });
+        }
+        self.relay = RelayConfig {
+            endpoint,
+            public_key: Some(public_key),
+        };
+        Ok(())
+    }
+
+    pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
+        &self,
+    ) -> Result<(IpAddr, HashSet<PublicKey>), Error> {
+        let relay_public_key = self
+            .relay
+            .public_key
+            .ok_or_else(|| format_error!("no relay public key"))?;
+        let mut relay_ip_addr: Option<IpAddr> = None;
+        let mut public_keys: HashSet<PublicKey> = HashSet::new();
+        for peer in self.peers.iter() {
+            if peer.public_key == relay_public_key {
+                relay_ip_addr = Some(
+                    peer.allowed_ips
+                        .ok_or_else(|| format_error!("no allowed ips for relay peer"))?
+                        .addr(),
+                );
+            } else {
+                public_keys.insert(peer.public_key);
+            }
+        }
+        Ok((
+            relay_ip_addr.ok_or_else(|| format_error!("relay peer not found"))?,
+            public_keys,
+        ))
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             interface_name: InterfaceName("wgx".into()),
-            relay: None,
+            relay: RelayConfig {
+                endpoint: None,
+                public_key: None,
+            },
             interface: InterfaceConfig {
                 private_key: PrivateKey::random(),
                 address: default_interface_address(),
@@ -245,8 +313,11 @@ impl Display for Config {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "[Hub]")?;
         writeln!(f, "InterfaceName = {}", self.interface_name)?;
-        if let Some(relay) = self.relay.as_ref() {
-            writeln!(f, "Relay = {}", relay)?;
+        if let Some(relay_endpoint) = self.relay.endpoint.as_ref() {
+            writeln!(f, "RelayEndpoint = {}", relay_endpoint)?;
+        }
+        if let Some(relay_public_key) = self.relay.public_key.as_ref() {
+            writeln!(f, "RelayPublicKey = {}", relay_public_key.to_base64())?;
         }
         writeln!(f)?;
         writeln!(f, "{}", self.interface)?;
@@ -255,6 +326,12 @@ impl Display for Config {
         }
         Ok(())
     }
+}
+
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
+struct RelayConfig {
+    endpoint: Option<Endpoint>,
+    public_key: Option<PublicKey>,
 }
 
 pub(crate) struct InterfaceConfig {
@@ -305,7 +382,9 @@ impl PeerConfig {
     pub(crate) fn write_wireguard_config(&self, out: &mut impl Write) -> Result<(), Error> {
         writeln!(out, "[Peer]")?;
         writeln!(out, "PublicKey = {}", self.public_key.to_base64())?;
-        writeln!(out, "PresharedKey = {}", self.preshared_key.to_base64())?;
+        if self.preshared_key.as_bytes().iter().any(|b| b != &0) {
+            writeln!(out, "PresharedKey = {}", self.preshared_key.to_base64())?;
+        }
         if let Some(allowed_ips) = self.allowed_ips {
             writeln!(out, "AllowedIPs = {}", allowed_ips)?;
         }
@@ -375,6 +454,15 @@ mod tests {
                 relay: u.arbitrary()?,
                 interface: u.arbitrary()?,
                 peers: u.arbitrary()?,
+            })
+        }
+    }
+
+    impl<'a> Arbitrary<'a> for RelayConfig {
+        fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
+            Ok(Self {
+                public_key: u.arbitrary::<Option<[u8; 32]>>()?.map(Into::into),
+                endpoint: u.arbitrary()?,
             })
         }
     }
