@@ -147,7 +147,11 @@ enum HubCommand {
         endpoint: String,
     },
     /// Generate hub configuration.
-    Init,
+    Init {
+        /// Relay's endpoint.
+        #[arg(value_name = "IP[:PORT]")]
+        relay: String,
+    },
     /// Set up Wireguard interface.
     Start,
     /// Tear down Wireguard interface.
@@ -301,9 +305,11 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Init => {
+            HubCommand::Init { relay } => {
+                let relay: Endpoint = relay.parse()?;
                 let config_file = args.config_file.as_path();
-                let config = Config::load(config_file)?;
+                let mut config = Config::load(config_file)?;
+                config.relay = Some(relay);
                 config.save(config_file)?;
                 Ok(ExitCode::SUCCESS)
             }
