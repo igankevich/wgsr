@@ -110,16 +110,6 @@ enum RelayCommand {
     Export,
 }
 
-fn main() -> ExitCode {
-    match do_main() {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("{}", e);
-            ExitCode::FAILURE
-        }
-    }
-}
-
 #[derive(Subcommand)]
 enum HubCommand {
     /// Get relay's public key.
@@ -155,17 +145,27 @@ enum HubCommand {
 
 #[derive(Subcommand)]
 enum SpokeCommand {
-    /// Add new spoke.
+    /// Add new spoke to the hub.
     Add {
         /// Export as QR-code.
         #[clap(long, action)]
         qr: bool,
     },
-    /// Remove existing spoke.
+    /// Remove existing spoke from the hub.
     Remove {
         /// Public key.
         public_key: String,
     },
+}
+
+fn main() -> ExitCode {
+    match do_main() {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{}", e);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
