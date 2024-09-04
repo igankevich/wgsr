@@ -17,7 +17,7 @@ pub(crate) enum Endpoint {
 }
 
 impl Endpoint {
-    pub(crate) fn to_socket_addr(&self) -> Result<Option<SocketAddr>, Box<dyn std::error::Error>> {
+    pub(crate) fn to_socket_addr(&self) -> Result<Option<SocketAddr>, std::io::Error> {
         match self {
             Self::SocketAddr(x) => Ok(x.to_socket_addrs()?.next()),
             Self::IpAddr(x) => Ok(Some(SocketAddr::new(*x, DEFAULT_LISTEN_PORT))),
@@ -37,6 +37,13 @@ impl Endpoint {
                 name: format!("{}:{}", x, DEFAULT_LISTEN_PORT),
             }),
         }
+    }
+}
+
+impl ToSocketAddrs for Endpoint {
+    type Iter = std::option::IntoIter<SocketAddr>;
+    fn to_socket_addrs(&self) -> Result<Self::Iter, std::io::Error> {
+        self.to_socket_addr().map(|x| x.into_iter())
     }
 }
 

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
-use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::net::UdpSocket;
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ pub(crate) struct WgxClient {
 }
 
 impl WgxClient {
-    pub(crate) fn new(socket_addr: SocketAddr) -> Result<Self, std::io::Error> {
+    pub(crate) fn new(socket_addr: impl ToSocketAddrs) -> Result<Self, std::io::Error> {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0_u16))?;
         socket.connect(socket_addr)?;
         Ok(Self { socket })

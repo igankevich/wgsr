@@ -137,21 +137,14 @@ enum HubCommand {
         #[arg(value_name = "PUBLIC-KEY")]
         public_keys: Vec<String>,
     },
-    /// Query relay's public key and set peers automatically.
-    Join {
-        /// Wireguard network interface name.
-        #[arg(value_name = "NAME")]
-        interface: String,
-        /// Relay's endpoint.
-        #[arg(value_name = "IP[:PORT]")]
-        endpoint: String,
-    },
     /// Generate hub configuration.
     Init {
         /// Relay's endpoint.
         #[arg(value_name = "IP[:PORT]")]
         relay: String,
     },
+    /// Synchronize the list of spokes with the relay.
+    Sync,
     /// Set up Wireguard interface.
     Start,
     /// Tear down Wireguard interface.
@@ -240,13 +233,8 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         },
         Some(Command::Hub(command)) => match command {
-            HubCommand::GetPublicKey {
-                endpoint: endpoint_str,
-            } => {
-                let endpoint: Endpoint = endpoint_str.parse()?;
-                let endpoint = endpoint
-                    .to_socket_addr()?
-                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+            HubCommand::GetPublicKey { endpoint } => {
+                let endpoint: Endpoint = endpoint.parse()?;
                 let mut client = WgxClient::new(endpoint)?;
                 let public_key = client.retry(|client| client.get_public_key())?;
                 println!("{}", public_key.to_base64());
@@ -265,30 +253,41 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 client.retry(|client| client.set_peers(&public_keys))?;
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Join {
-                interface,
-                endpoint: endpoint_str,
-            } => {
-                let endpoint: Endpoint = endpoint_str.parse()?;
-                let endpoint = endpoint
-                    .to_socket_addr()?
-                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
+            HubCommand::Init { relay } => {
+                let relay: Endpoint = relay.parse()?;
+                let mut client = WgxClient::new(&relay)?;
+                let relay_public_key = client.retry(|client| client.get_public_key())?;
+                eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
+                let config_file = args.config_file.as_path();
+                let mut config = Config::load(config_file)?;
+                config.set_relay(Some(relay.clone()), relay_public_key)?;
+                config.save(config_file)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Sync => {
+                let config_file = args.config_file.as_path();
+                let mut config = Config::load(config_file)?;
+                let endpoint = config.get_relay_endpoint().ok_or_else(|| {
+                    format!(
+                        "please specify `Relay` in the configuration file `{}`",
+                        config_file.display()
+                    )
+                })?;
                 let mut client = WgxClient::new(endpoint)?;
                 let relay_public_key = client.retry(|client| client.get_public_key())?;
                 eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
-                let (relay_ip_addr, peers_public_keys) = get_relay_ip_addr_and_peers_public_keys(
-                    &interface,
-                    &relay_public_key,
-                    endpoint,
-                )?;
+                if Some(&relay_public_key) != config.get_relay_public_key() {
+                    config.set_relay(Some(endpoint.clone()), relay_public_key)?;
+                    config.save(config_file)?;
+                    eprintln!("✓ Updated relay public key");
+                }
+                let (relay_ip_addr, peers_public_keys) =
+                    config.get_relay_ip_addr_and_peers_public_keys()?;
                 eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
                 if peers_public_keys.is_empty() {
                     return Ok(ExitCode::SUCCESS);
                 }
                 let endpoint = Endpoint::IpAddr(relay_ip_addr);
-                let endpoint = endpoint
-                    .to_socket_addr()?
-                    .ok_or_else(|| format!("failed to resolve `{}`", endpoint_str))?;
                 let mut client = WgxClient::new(endpoint)?;
                 client.retry(|client| client.set_peers(&peers_public_keys))?;
                 eprintln!(
@@ -303,14 +302,6 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                             a
                         })
                 );
-                Ok(ExitCode::SUCCESS)
-            }
-            HubCommand::Init { relay } => {
-                let relay: Endpoint = relay.parse()?;
-                let config_file = args.config_file.as_path();
-                let mut config = Config::load(config_file)?;
-                config.relay = Some(relay);
-                config.save(config_file)?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Start => {
@@ -354,7 +345,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 .write_wireguard_config(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
-                let relay_endpoint = config.relay.clone().ok_or_else(|| {
+                let relay_endpoint = config.get_relay_endpoint().ok_or_else(|| {
                     format_error!("no `DefaultRelay` is specified in the configuration")
                 })?;
                 PeerConfig {
@@ -366,10 +357,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 .write_wireguard_config(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
-                let relay_socket_addr = relay_endpoint
-                    .to_socket_addr()?
-                    .ok_or_else(|| format!("failed to resolve `{}`", relay_endpoint))?;
-                let mut client = WgxClient::new(relay_socket_addr)?;
+                let mut client = WgxClient::new(relay_endpoint)?;
                 let relay_public_key = client.retry(|client| client.get_public_key())?;
                 let ip_address = config
                     .random_ip_address()
@@ -378,7 +366,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     public_key: relay_public_key,
                     preshared_key: preshared_key.clone(),
                     allowed_ips: None,
-                    endpoint: Some(relay_endpoint),
+                    endpoint: Some(relay_endpoint.clone()),
                     persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
                 }
                 .write_wireguard_config(&mut wg_config)?;

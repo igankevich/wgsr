@@ -25,7 +25,7 @@ After that the handshake between _hub_ and _spoke_ will succeed and you can use 
 To summarize:
 - add the relay as a peer to your _hub_ and _spoke_ Wireguard configuration (`wgx export`),
 - replace hub's endpoint with relay's endpoint in the _spoke_ Wireguard configuration,
-- tell the relay which peers the hub wants to communicate with (`wgx hub join`).
+- tell the relay which peers the hub wants to communicate with (`wgx hub sync`).
 
 
 # Installation
