@@ -23,6 +23,7 @@ use wgx::ToBase64;
 use crate::format_error;
 use crate::Endpoint;
 use crate::Error;
+use crate::InterfaceName;
 
 pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/hub.conf";
 type FwMark = u32;
@@ -31,7 +32,7 @@ type FwMark = u32;
 pub(crate) struct Config {
     pub(crate) interface: InterfaceConfig,
     pub(crate) peers: Vec<PeerConfig>,
-    pub(crate) interface_name: String,
+    pub(crate) interface_name: InterfaceName,
     pub(crate) relay: Option<Endpoint>,
 }
 
@@ -73,20 +74,22 @@ impl Config {
             if new_section && prev_section.as_deref() == section && section != Some("Peer") {
                 return Err(format_error!("duplicate section `{}`", new_section));
             }
-            if prev_section.as_deref() == Some("Peer") && section != prev_section.as_deref() {
-                add_peer(
-                    &mut config.peers,
-                    peer_public_key.take(),
-                    peer_preshared_key.take(),
-                    peer_allowed_ips.take(),
-                    peer_endpoint.take(),
-                    peer_persistent_keepalive.take(),
-                )?;
+            if new_section {
+                if prev_section.as_deref() == Some("Peer") {
+                    add_peer(
+                        &mut config.peers,
+                        peer_public_key.take(),
+                        peer_preshared_key.take(),
+                        peer_allowed_ips.take(),
+                        peer_endpoint.take(),
+                        peer_persistent_keepalive.take(),
+                    )?;
+                }
+                prev_section = section.map(ToString::to_string);
             }
-            prev_section = section.map(ToString::to_string);
             match section {
                 Some(section @ "Hub") => match key {
-                    "InterfaceName" => config.interface_name = value.to_string(),
+                    "InterfaceName" => config.interface_name = value.parse().map_err(Error::map)?,
                     "Relay" => config.relay = Some(value.parse().map_err(Error::map)?),
                     key => return Err(format_error!("unknown key under `{}`: `{}`", section, key)),
                 },
@@ -111,6 +114,7 @@ impl Config {
                             Some(FromBase64::from_base64(value).map_err(Error::map)?)
                     }
                     "AllowedIPs" => peer_allowed_ips = Some(value.parse().map_err(Error::map)?),
+                    "Endpoint" => peer_endpoint = Some(value.parse().map_err(Error::map)?),
                     "PersistentKeepalive" => {
                         peer_persistent_keepalive = Some(Duration::from_secs(
                             value.parse::<u64>().map_err(Error::map)?,
@@ -159,7 +163,7 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        if self.interface_name.is_empty() {
+        if self.interface_name.0.is_empty() {
             return Err(format_error!(
                 "invalid interface name: `{}`",
                 self.interface_name
@@ -214,7 +218,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            interface_name: "wgx".into(),
+            interface_name: InterfaceName("wgx".into()),
             relay: None,
             interface: InterfaceConfig {
                 private_key: PrivateKey::random(),
@@ -367,7 +371,7 @@ mod tests {
     impl<'a> Arbitrary<'a> for Config {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
-                interface_name: arbitrary_interface_name(u)?,
+                interface_name: u.arbitrary()?,
                 relay: u.arbitrary()?,
                 interface: u.arbitrary()?,
                 peers: u.arbitrary()?,
@@ -461,17 +465,5 @@ mod tests {
         };
         let prefix_len = u.int_in_range(0..=max_prefix_len)?;
         Ok(IpNet::new(ipaddr, prefix_len).unwrap())
-    }
-
-    fn arbitrary_interface_name(u: &mut Unstructured<'_>) -> Result<String, arbitrary::Error> {
-        let name: String = u.arbitrary()?;
-        let mut name: String = name
-            .chars()
-            .filter(|ch| ch.is_ascii_alphanumeric() || ch == &'-' || ch == &'_')
-            .collect();
-        if name.is_empty() {
-            name = "x".to_string();
-        }
-        Ok(name)
     }
 }

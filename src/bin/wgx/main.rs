@@ -31,6 +31,7 @@ use self::command_hr::*;
 use self::config::*;
 use self::endpoint::*;
 use self::error::*;
+use self::interface_name::*;
 use self::qrcode::*;
 use self::units::*;
 use self::unix::*;
@@ -41,6 +42,7 @@ mod command_hr;
 mod config;
 mod endpoint;
 mod error;
+mod interface_name;
 mod qrcode;
 mod units;
 mod unix;
@@ -311,20 +313,20 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 if !config_file.exists() {
                     config.save(config_file)?;
                 }
-                let wg = Wg::new(config.interface_name);
+                let wg = Wg::new(config.interface_name.0);
                 wg.stop()?;
                 wg.start(&config.interface, &config.peers)?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Stop => {
                 let config = Config::load(args.config_file.as_path())?;
-                let wg = Wg::new(config.interface_name);
+                let wg = Wg::new(config.interface_name.0);
                 wg.stop()?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Reload => {
                 let config = Config::load(args.config_file.as_path())?;
-                let wg = Wg::new(config.interface_name);
+                let wg = Wg::new(config.interface_name.0);
                 wg.reload(&config.interface, &config.peers)?;
                 Ok(ExitCode::SUCCESS)
             }
