@@ -88,8 +88,20 @@ mod tests {
 
     use arbitrary::Arbitrary;
     use arbitrary::Unstructured;
+    use arbtest::arbtest;
 
     use super::*;
+
+    #[test]
+    fn endpoint_io() {
+        arbtest(|u| {
+            let expected: Endpoint = u.arbitrary()?;
+            let string = expected.to_string();
+            let actual: Endpoint = string.parse().unwrap();
+            assert_eq!(expected, actual);
+            Ok(())
+        });
+    }
 
     impl<'a> Arbitrary<'a> for Endpoint {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
