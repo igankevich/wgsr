@@ -68,18 +68,36 @@ wgx relay sessions
 
 ## Hub
 
-Run this command on the hub (a Wireguard peer to which every other peer is connected).
+Run these commands on the hub (a Wireguard peer to which every other peer is connected).
 
 ```bash
-# configure relay
 alias wgx='docker run -it --rm --network host docker.io/igankevich/wgx:latest /bin/wgx'
-wgx hub init IP:PORT
+# configure relay
 # IP:PORT - public ip address and optional port of the relay
+wgx hub init IP:PORT
 # add "spoke" peer
-wgx spoke add
+wgx hub add-spoke
 # configure wireguard interface
 wgx hub start
 ```
 
 These commands will configure the relay as a peer, and
 then send the public keys of all the other peers to the relay for routing.
+
+
+## Spoke
+
+Run these commands on the spoke (a Wireguard peer that connects to the hub over the relay).
+
+```bash
+alias wgx='docker run -it --rm --network host docker.io/igankevich/wgx:latest /bin/wgx'
+# configure relay
+# IP:PORT - public ip address and optional port of the relay
+wgx hub init IP:PORT
+# add "spoke" peer
+# PUBLIC-KEY - hub's public key in BASE64 format
+# PRESHARED-KEY-FILE - a file containing hub's preshared key in BASE64 format
+wgx spoke add-hub PUBLIC-KEY PRESHARED-KEY-FILE
+# configure wireguard interface
+wgx spoke start
+```

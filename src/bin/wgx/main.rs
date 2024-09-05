@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io::Write;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -59,14 +60,6 @@ struct Args {
     /// Print version.
     #[clap(long, action)]
     version: bool,
-    /// Configuration file path.
-    #[arg(
-        short = 'c',
-        long = "config",
-        value_name = "path",
-        default_value = DEFAULT_CONFIGURATION_FILE_PATH
-    )]
-    config_file: PathBuf,
     /// UNIX socket path.
     #[arg(
         short = 's',
@@ -86,11 +79,31 @@ enum Command {
     #[command(subcommand)]
     Relay(RelayCommand),
     /// Hub commands.
-    #[command(subcommand)]
-    Hub(HubCommand),
+    Hub {
+        /// Hub configuration file.
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "path",
+            default_value = DEFAULT_HUB_CONFIG_FILE,
+        )]
+        config_file: PathBuf,
+        #[command(subcommand)]
+        command: HubCommand,
+    },
     /// Spoke commands.
-    #[command(subcommand)]
-    Spoke(SpokeCommand),
+    Spoke {
+        /// Spoke configuration file.
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "path",
+            default_value = DEFAULT_SPOKE_CONFIG_FILE,
+        )]
+        config_file: PathBuf,
+        #[command(subcommand)]
+        command: SpokeCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -112,26 +125,22 @@ enum RelayCommand {
 
 #[derive(Subcommand)]
 enum HubCommand {
-    /// Get relay's public key.
-    GetPublicKey {
-        /// Relay's endpoint.
-        #[arg(value_name = "IP[:PORT]")]
-        endpoint: String,
-    },
-    /// Send peers' public keys to the relay.
-    SetPeers {
-        /// Relay's internal IP:PORT in Wireguard network.
-        #[arg(value_name = "IP[:PORT]")]
-        relay_socket_addr: SocketAddr,
-        /// Peers' public keys.
-        #[arg(value_name = "PUBLIC-KEY")]
-        public_keys: Vec<String>,
-    },
     /// Generate hub configuration.
     Init {
         /// Relay's endpoint.
         #[arg(value_name = "IP[:PORT]")]
         relay: String,
+    },
+    /// Add new spoke to the hub.
+    AddSpoke {
+        /// Export as QR-code.
+        #[clap(long, action)]
+        qr: bool,
+    },
+    /// Remove existing spoke from the hub.
+    RemoveSpoke {
+        /// Public key.
+        public_key: String,
     },
     /// Synchronize the list of spokes with the relay.
     Sync,
@@ -141,21 +150,46 @@ enum HubCommand {
     Stop,
     /// Reload Wireguard configuration.
     Reload,
+    /// Get relay's public key. Low-level command.
+    GetPublicKey {
+        /// Relay's endpoint.
+        #[arg(value_name = "IP[:PORT]")]
+        endpoint: String,
+    },
+    /// Send peers' public keys to the relay. Low-level command.
+    SetPeers {
+        /// Relay's internal IP:PORT in Wireguard network.
+        #[arg(value_name = "IP[:PORT]")]
+        relay_socket_addr: SocketAddr,
+        /// Peers' public keys.
+        #[arg(value_name = "PUBLIC-KEY")]
+        public_keys: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum SpokeCommand {
-    /// Add new spoke to the hub.
-    Add {
-        /// Export as QR-code.
-        #[clap(long, action)]
-        qr: bool,
+    /// Generate spoke configuration.
+    Init {
+        /// Relay's endpoint.
+        #[arg(value_name = "IP[:PORT]")]
+        relay: String,
     },
-    /// Remove existing spoke from the hub.
-    Remove {
-        /// Public key.
+    /// Connect this spoke to the hub via the pre-configured relay.
+    AddHub {
+        /// Hub's public key in BASE64 format.
         public_key: String,
+        /// Preshared key file.
+        preshared_key_file: PathBuf,
     },
+    /// Synchronize relay's public key.
+    Sync,
+    /// Set up Wireguard interface.
+    Start,
+    /// Tear down Wireguard interface.
+    Stop,
+    /// Reload Wireguard configuration.
+    Reload,
 }
 
 fn main() -> ExitCode {
@@ -232,7 +266,10 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
         },
-        Some(Command::Hub(command)) => match command {
+        Some(Command::Hub {
+            config_file,
+            command,
+        }) => match command {
             HubCommand::GetPublicKey { endpoint } => {
                 let endpoint: Endpoint = endpoint.parse()?;
                 let mut client = WgxClient::new(endpoint)?;
@@ -254,33 +291,13 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Init { relay } => {
-                let relay: Endpoint = relay.parse()?;
-                let mut client = WgxClient::new(&relay)?;
-                let relay_public_key = client.retry(|client| client.get_public_key())?;
-                eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
-                let config_file = args.config_file.as_path();
-                let mut config = Config::load(config_file)?;
-                config.set_relay(Some(relay.clone()), relay_public_key)?;
-                config.save(config_file)?;
+                init(relay, config_file.as_path())?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::Sync => {
-                let config_file = args.config_file.as_path();
+                let config_file = config_file.as_path();
                 let mut config = Config::load(config_file)?;
-                let endpoint = config.get_relay_endpoint().ok_or_else(|| {
-                    format!(
-                        "please specify `Relay` in the configuration file `{}`",
-                        config_file.display()
-                    )
-                })?;
-                let mut client = WgxClient::new(endpoint)?;
-                let relay_public_key = client.retry(|client| client.get_public_key())?;
-                eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
-                if Some(&relay_public_key) != config.get_relay_public_key() {
-                    config.set_relay(Some(endpoint.clone()), relay_public_key)?;
-                    config.save(config_file)?;
-                    eprintln!("✓ Updated relay public key");
-                }
+                sync_relay_public_key(&mut config)?;
                 let (relay_ip_addr, peers_public_keys) =
                     config.get_relay_ip_addr_and_peers_public_keys()?;
                 eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
@@ -304,50 +321,21 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::Start => {
-                let config_file = args.config_file.as_path();
-                let config = Config::load(config_file)?;
-                if !config_file.exists() {
-                    config.save(config_file)?;
-                }
-                let wg = Wg::new(config.interface_name.0);
-                wg.stop()?;
-                wg.start(&config.interface, &config.peers)?;
-                Ok(ExitCode::SUCCESS)
-            }
-            HubCommand::Stop => {
-                let config = Config::load(args.config_file.as_path())?;
-                let wg = Wg::new(config.interface_name.0);
-                wg.stop()?;
-                Ok(ExitCode::SUCCESS)
-            }
-            HubCommand::Reload => {
-                let config = Config::load(args.config_file.as_path())?;
-                let wg = Wg::new(config.interface_name.0);
-                wg.reload(&config.interface, &config.peers)?;
-                Ok(ExitCode::SUCCESS)
-            }
-        },
-        Some(Command::Spoke(command)) => match command {
-            SpokeCommand::Add { qr } => {
-                let mut config = Config::load(args.config_file.as_path())?;
+            HubCommand::AddSpoke { qr } => {
+                let mut config = Config::load(config_file.as_path())?;
                 let private_key = PrivateKey::random();
                 let public_key: PublicKey = (&private_key).into();
                 let preshared_key = PresharedKey::random();
                 let mut wg_config: Vec<u8> = Vec::with_capacity(4096);
                 InterfaceConfig {
                     private_key,
-                    address: config
-                        .random_ip_address()
-                        .ok_or_else(|| format_error!("exhausted available IP addresses"))?,
+                    address: config.random_ip_address()?,
                     fwmark: Default::default(),
                     listen_port: Default::default(),
                 }
                 .write_wireguard_config(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
-                let relay_endpoint = config.get_relay_endpoint().ok_or_else(|| {
-                    format_error!("no `DefaultRelay` is specified in the configuration")
-                })?;
+                let relay_endpoint = config.get_relay_endpoint()?;
                 PeerConfig {
                     public_key: (&config.interface.private_key).into(),
                     preshared_key: PresharedKey::random(),
@@ -359,9 +347,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 writeln!(&mut wg_config)?;
                 let mut client = WgxClient::new(relay_endpoint)?;
                 let relay_public_key = client.retry(|client| client.get_public_key())?;
-                let ip_address = config
-                    .random_ip_address()
-                    .ok_or_else(|| format_error!("exhausted available IP addresses"))?;
+                let ip_address = config.random_ip_address()?;
                 PeerConfig {
                     public_key: relay_public_key,
                     preshared_key: preshared_key.clone(),
@@ -378,7 +364,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     endpoint: None,
                     persistent_keepalive: Duration::ZERO,
                 });
-                config.save(args.config_file.as_path())?;
+                config.save()?;
                 if qr {
                     let qrcode = QrCode::with_error_correction_level(&wg_config, EcLevel::H)?;
                     print!("{}", qrcode_to_string(qrcode));
@@ -387,16 +373,73 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
                 Ok(ExitCode::SUCCESS)
             }
-            SpokeCommand::Remove { public_key } => {
+            HubCommand::RemoveSpoke { public_key } => {
                 let public_key = PublicKey::from_base64(&public_key)?;
-                let config_file = args.config_file.as_path();
+                let config_file = config_file.as_path();
                 let mut config = Config::load(config_file)?;
                 let old_len = config.peers.len();
                 config.peers.retain(|peer| peer.public_key != public_key);
                 let new_len = config.peers.len();
                 if old_len != new_len {
-                    config.save(config_file)?;
+                    config.save()?;
                 }
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Start => {
+                wgx_start(config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Stop => {
+                wgx_stop(config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            HubCommand::Reload => {
+                wgx_reload(config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+        },
+        Some(Command::Spoke {
+            config_file,
+            command,
+        }) => match command {
+            SpokeCommand::Init { relay } => {
+                init(relay, config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::AddHub {
+                public_key,
+                preshared_key_file,
+            } => {
+                let public_key = PublicKey::from_base64(&public_key)?;
+                let preshared_key =
+                    PresharedKey::from_base64(&std::fs::read_to_string(preshared_key_file)?)?;
+                let mut config = Config::load(config_file.as_path())?;
+                let relay_endpoint = config.get_relay_endpoint()?;
+                config.peers.push(PeerConfig {
+                    public_key,
+                    preshared_key,
+                    allowed_ips: Some(allowed_ip_any()),
+                    endpoint: Some(relay_endpoint.clone()),
+                    persistent_keepalive: Duration::ZERO,
+                });
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Sync => {
+                let config_file = config_file.as_path();
+                let mut config = Config::load(config_file)?;
+                sync_relay_public_key(&mut config)?;
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Start => {
+                wgx_start(config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Stop => {
+                wgx_stop(config_file.as_path())?;
+                Ok(ExitCode::SUCCESS)
+            }
+            SpokeCommand::Reload => {
+                wgx_reload(config_file.as_path())?;
                 Ok(ExitCode::SUCCESS)
             }
         },
@@ -405,6 +448,59 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn init(relay: String, config_file: &Path) -> Result<(), Error> {
+    let relay: Endpoint = relay.parse().map_err(Error::map)?;
+    let mut client = WgxClient::new(&relay)?;
+    let relay_public_key = client.retry(|client| client.get_public_key())?;
+    eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
+    let mut config = Config::load(config_file)?;
+    config.set_relay(Some(relay.clone()), relay_public_key)?;
+    config.save()?;
+    Ok(())
+}
+
+fn sync_relay_public_key(config: &mut Config) -> Result<(), Error> {
+    let endpoint = config.get_relay_endpoint()?;
+    let mut client = WgxClient::new(endpoint)?;
+    let relay_public_key = client.retry(|client| client.get_public_key())?;
+    eprintln!("✓ Relay public key: {}", relay_public_key.to_base64());
+    if Some(&relay_public_key) != config.get_relay_public_key() {
+        config.set_relay(Some(endpoint.clone()), relay_public_key)?;
+        config.save()?;
+        eprintln!("✓ Updated relay public key");
+        wg_reload(config)?;
+    }
+    Ok(())
+}
+
+fn wgx_start(config_file: &Path) -> Result<(), Error> {
+    let config = Config::load(config_file)?;
+    let wg = Wg::new(config.interface_name.0);
+    wg.stop()?;
+    wg.start(&config.interface, &config.peers)?;
+    Ok(())
+}
+
+fn wgx_stop(config_file: &Path) -> Result<(), Error> {
+    let config = Config::load(config_file)?;
+    let wg = Wg::new(config.interface_name.0);
+    wg.stop()?;
+    Ok(())
+}
+
+fn wgx_reload(config_file: &Path) -> Result<(), Error> {
+    let config = Config::load(config_file)?;
+    wg_reload(&config)?;
+    Ok(())
+}
+
+fn wg_reload(config: &Config) -> Result<(), Error> {
+    let wg = Wg::new(config.interface_name.0.clone());
+    wg.reload(&config.interface, &config.peers)?;
+    eprintln!("✓ Synced wg config");
+    Ok(())
 }
 
 fn print_status(status: &Status) {
