@@ -93,7 +93,7 @@ Run these commands on the spoke (a Wireguard peer that connects to the hub over 
 alias wgx='docker run -it --rm --network host docker.io/igankevich/wgx:latest /bin/wgx'
 # configure relay
 # IP:PORT - public ip address and optional port of the relay
-wgx hub init IP:PORT
+wgx spoke init IP:PORT
 # add "spoke" peer
 # PUBLIC-KEY - hub's public key in BASE64 format
 # PRESHARED-KEY-FILE - a file containing hub's preshared key in BASE64 format
