@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ipnet::IpNet;
@@ -26,7 +27,8 @@ use crate::Error;
 use crate::InterfaceName;
 use crate::DEFAULT_PERSISTENT_KEEPALIVE;
 
-pub(crate) const DEFAULT_CONFIGURATION_FILE_PATH: &str = "/etc/wgx/hub.conf";
+pub(crate) const DEFAULT_HUB_CONFIG_FILE: &str = "/etc/wgx/hub.conf";
+pub(crate) const DEFAULT_SPOKE_CONFIG_FILE: &str = "/etc/wgx/spoke.conf";
 type FwMark = u32;
 
 #[cfg_attr(test, derive(PartialEq, Eq, Debug))]
@@ -35,13 +37,17 @@ pub(crate) struct Config {
     pub(crate) peers: Vec<PeerConfig>,
     pub(crate) interface_name: InterfaceName,
     relay: RelayConfig,
+    pub(crate) file: PathBuf,
 }
 
 impl Config {
     pub(crate) fn load<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
         match Self::do_load(path) {
-            Ok(config) => Ok(config),
+            Ok(mut config) => {
+                config.file = path.into();
+                Ok(config)
+            }
             Err(e) => Err(format_error!("failed to read `{}`: {}", path.display(), e)),
         }
     }
@@ -153,7 +159,11 @@ impl Config {
         Ok(config)
     }
 
-    pub(crate) fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
+    pub(crate) fn save(&self) -> Result<(), Error> {
+        self.save_to(self.file.as_path())
+    }
+
+    pub(crate) fn save_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         let path = path.as_ref();
         self.do_save(path)
             .map_err(|e| format_error!("failed to write `{}`: {}", path.display(), e))
@@ -197,7 +207,7 @@ impl Config {
     }
 
     #[allow(clippy::unwrap_used)]
-    pub(crate) fn random_ip_address(&self) -> Option<IpNet> {
+    pub(crate) fn random_ip_address(&self) -> Result<IpNet, Error> {
         let mut addresses: HashSet<IpAddr> = HashSet::new();
         addresses.insert(self.interface.address.addr());
         addresses.extend(
@@ -207,7 +217,7 @@ impl Config {
         );
         let n = self.interface.address.hosts().count();
         if n == addresses.len() {
-            return None;
+            return Err(format_error!("exhausted available IP addresses"));
         }
         loop {
             let i = OsRng.gen_range(0..n);
@@ -216,17 +226,16 @@ impl Config {
                 None => continue,
             };
             if !addresses.contains(&address) {
-                return Some(IpNet::new(address, self.interface.address.prefix_len()).unwrap());
+                return Ok(IpNet::new(address, self.interface.address.prefix_len()).unwrap());
             }
         }
     }
 
-    pub(crate) fn get_relay_endpoint(&self) -> Option<&Endpoint> {
-        self.relay.endpoint.as_ref()
-    }
-
-    pub(crate) fn get_relay_public_key(&self) -> Option<&PublicKey> {
-        self.relay.public_key.as_ref()
+    pub(crate) fn get_relay_endpoint(&self) -> Result<&Endpoint, Error> {
+        self.relay
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| format_error!("no `Relay` is specified in `{}`", self.file.display()))
     }
 
     pub(crate) fn set_relay(
@@ -239,9 +248,7 @@ impl Config {
             self.peers.push(PeerConfig {
                 public_key,
                 preshared_key: [0_u8; 32].into(),
-                allowed_ips: Some(self.random_ip_address().ok_or_else(|| {
-                    format_error!("failed to set relay: exhausted available IP addresses")
-                })?),
+                allowed_ips: Some(self.random_ip_address()?),
                 endpoint: endpoint.clone(),
                 persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
             });
@@ -251,6 +258,10 @@ impl Config {
             public_key: Some(public_key),
         };
         Ok(())
+    }
+
+    pub(crate) fn get_relay_public_key(&self) -> Option<&PublicKey> {
+        self.relay.public_key.as_ref()
     }
 
     pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
@@ -295,6 +306,7 @@ impl Default for Config {
                 listen_port: None,
             },
             peers: Default::default(),
+            file: Default::default(),
         }
     }
 }
@@ -440,7 +452,7 @@ mod tests {
         arbtest(|u| {
             let expected: Config = u.arbitrary()?;
             let file = NamedTempFile::new().unwrap();
-            expected.save(file.path()).unwrap();
+            expected.save_to(file.path()).unwrap();
             let actual = Config::load(file.path()).unwrap();
             assert_eq!(expected, actual);
             Ok(())
@@ -454,6 +466,7 @@ mod tests {
                 relay: u.arbitrary()?,
                 interface: u.arbitrary()?,
                 peers: u.arbitrary()?,
+                file: u.arbitrary()?,
             })
         }
     }
