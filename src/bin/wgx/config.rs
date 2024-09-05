@@ -160,11 +160,7 @@ impl Config {
     }
 
     pub(crate) fn save(&self) -> Result<(), Error> {
-        self.save_to(self.file.as_path())
-    }
-
-    pub(crate) fn save_to<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
-        let path = path.as_ref();
+        let path = self.file.as_path();
         self.do_save(path)
             .map_err(|e| format_error!("failed to write `{}`: {}", path.display(), e))
     }
@@ -450,9 +446,10 @@ mod tests {
     #[test]
     fn save_load() {
         arbtest(|u| {
-            let expected: Config = u.arbitrary()?;
             let file = NamedTempFile::new().unwrap();
-            expected.save_to(file.path()).unwrap();
+            let mut expected: Config = u.arbitrary()?;
+            expected.file = file.path().into();
+            expected.save().unwrap();
             let actual = Config::load(file.path()).unwrap();
             assert_eq!(expected, actual);
             Ok(())
@@ -466,7 +463,7 @@ mod tests {
                 relay: u.arbitrary()?,
                 interface: u.arbitrary()?,
                 peers: u.arbitrary()?,
-                file: u.arbitrary()?,
+                file: Default::default(),
             })
         }
     }
