@@ -55,7 +55,7 @@ impl Network {
         let (pipe_in, pipe_out) = pipe()?;
         let pipe_out_fd = pipe_out.as_raw_fd();
         let main = Process::spawn(
-            move || network_switch_main(pipe_out_fd, config),
+            || network_switch_main(pipe_out_fd, config),
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWUTS,
         )?;
@@ -109,17 +109,16 @@ fn do_network_switch_main<
     wait_for_fd_to_close(fd)?;
     sethostname("switch")?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
-    netlink.up("lo".into())?;
-    netlink.new_bridge("testnet".into())?;
-    let bridge_index = netlink.index("testnet".into())?;
+    netlink.set_up("lo")?;
+    netlink.new_bridge("testnet")?;
+    let bridge_index = netlink.index("testnet")?;
     let mut nodes: Vec<Process> = Vec::with_capacity(config.nodes.len());
     let net = IpNet::new(Ipv4Addr::new(10, 107, 0, 0).into(), 16)?;
     let mut all_node_configs = Vec::with_capacity(config.nodes.len());
     let mut all_user_configs = Vec::with_capacity(config.nodes.len());
     for (i, (mut node_config, user_config)) in config.nodes.into_iter().enumerate() {
-        let outer = format!("n{}", i);
         if node_config.name.is_empty() {
-            node_config.name = outer.clone();
+            node_config.name = outer_ifname(i);
         }
         if node_config.ipaddr.addr().is_unspecified() {
             node_config.ipaddr = IpNet::new(
@@ -133,10 +132,9 @@ fn do_network_switch_main<
         all_user_configs.push(user_config);
     }
     for i in 0..all_node_configs.len() {
-        let inner = "veth".to_string();
-        let outer = format!("n{}", i);
-        netlink.new_veth_pair(outer.clone(), inner.clone())?;
-        netlink.up(outer.clone())?;
+        let outer = outer_ifname(i);
+        netlink.new_veth_pair(outer.clone(), INNER_IFNAME)?;
+        netlink.set_up(outer.clone())?;
         netlink.set_bridge(outer, bridge_index)?;
         let (pipe_in, pipe_out) = pipe()?;
         let pipe_out_fd = pipe_out.as_raw_fd();
@@ -144,11 +142,11 @@ fn do_network_switch_main<
         let all_node_configs = all_node_configs.clone();
         let all_user_configs = all_user_configs.clone();
         let process = Process::spawn(
-            move || network_node_main(pipe_out_fd, i, callback, all_node_configs, all_user_configs),
+            || network_node_main(pipe_out_fd, i, callback, all_node_configs, all_user_configs),
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
         )?;
-        netlink.set_network_namespace(inner, process.id())?;
+        netlink.set_network_namespace(INNER_IFNAME, process.id())?;
         // notify the child process
         drop(pipe_in);
         drop(pipe_out);
@@ -203,9 +201,8 @@ fn do_network_node_main<C, F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> Callback
     // wait for veth to be trasnferred to this process' network namespace
     wait_for_fd_to_close(fd)?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
-    let inner = "veth".to_string();
-    let inner_index = netlink.index(inner.clone())?;
-    netlink.up(inner)?;
+    let inner_index = netlink.index(INNER_IFNAME)?;
+    netlink.set_up(INNER_IFNAME)?;
     netlink.set_ip_address(inner_index, node_config[i].ipaddr)?;
     sethostname(&node_config[i].name)?;
     callback(i, node_config, user_config).map_err(|e| format!("error in node main: {}", e).into())
@@ -226,12 +223,18 @@ impl Netlink {
         Ok(Self { socket })
     }
 
-    pub fn new_veth_pair(&mut self, name: String, peer_name: String) -> Result<(), std::io::Error> {
+    pub fn new_veth_pair(
+        &mut self,
+        name: impl ToString,
+        peer_name: impl ToString,
+    ) -> Result<(), std::io::Error> {
         let mut peer = LinkMessage::default();
-        peer.attributes.push(LinkAttribute::IfName(name));
+        peer.attributes
+            .push(LinkAttribute::IfName(name.to_string()));
         let link_info_data = InfoData::Veth(InfoVeth::Peer(peer));
         let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(peer_name));
+        link.attributes
+            .push(LinkAttribute::IfName(peer_name.to_string()));
         link.attributes.push(LinkAttribute::LinkInfo(vec![
             LinkInfo::Kind(InfoKind::Veth),
             LinkInfo::Data(link_info_data),
@@ -246,9 +249,10 @@ impl Netlink {
         Ok(())
     }
 
-    pub fn new_bridge(&mut self, name: String) -> Result<(), std::io::Error> {
+    pub fn new_bridge(&mut self, name: impl ToString) -> Result<(), std::io::Error> {
         let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(name));
+        link.attributes
+            .push(LinkAttribute::IfName(name.to_string()));
         link.attributes
             .push(LinkAttribute::LinkInfo(vec![LinkInfo::Kind(
                 InfoKind::Bridge,
@@ -263,9 +267,10 @@ impl Netlink {
         Ok(())
     }
 
-    pub fn up(&mut self, name: String) -> Result<(), std::io::Error> {
+    pub fn set_up(&mut self, name: impl ToString) -> Result<(), std::io::Error> {
         let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(name));
+        link.attributes
+            .push(LinkAttribute::IfName(name.to_string()));
         link.header.flags.insert(LinkFlags::Up);
         link.header.change_mask.insert(LinkFlags::Up);
         let mut message = NetlinkMessage::from(RouteNetlinkMessage::SetLink(link));
@@ -289,9 +294,14 @@ impl Netlink {
         Ok(())
     }
 
-    pub fn set_network_namespace(&mut self, name: String, pid: Pid) -> Result<(), std::io::Error> {
+    pub fn set_network_namespace(
+        &mut self,
+        name: impl ToString,
+        pid: Pid,
+    ) -> Result<(), std::io::Error> {
         let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(name));
+        link.attributes
+            .push(LinkAttribute::IfName(name.to_string()));
         link.attributes
             .push(LinkAttribute::NetNsPid(pid.as_raw() as u32));
         let mut message = NetlinkMessage::from(RouteNetlinkMessage::SetLink(link));
@@ -325,9 +335,10 @@ impl Netlink {
         Ok(())
     }
 
-    pub fn index(&mut self, name: String) -> Result<u32, std::io::Error> {
+    pub fn index(&mut self, name: impl ToString) -> Result<u32, std::io::Error> {
         let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(name));
+        link.attributes
+            .push(LinkAttribute::IfName(name.to_string()));
         let mut message = NetlinkMessage::from(RouteNetlinkMessage::GetLink(link));
         message.header.flags = NLM_F_REQUEST | NLM_F_ACK;
         message.finalize();
@@ -408,4 +419,9 @@ fn wait_status_to_string(status: WaitStatus) -> String {
     }
 }
 
+fn outer_ifname(i: usize) -> String {
+    format!("n{}", i)
+}
+
 const STACK_SIZE: usize = 4096 * 16;
+const INNER_IFNAME: &str = "veth";

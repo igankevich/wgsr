@@ -1,6 +1,7 @@
 use std::ffi::c_int;
 use std::ffi::c_void;
 
+use log::error;
 use nix::errno::Errno;
 use nix::sched::CloneFlags;
 use nix::sys::signal::kill;
@@ -22,6 +23,7 @@ impl Process {
         stack_size: usize,
         flags: CloneFlags,
     ) -> Result<Self, Errno> {
+        let stack_size = stack_size | 16;
         let mut stack = Vec::with_capacity(stack_size);
         // The stack can be large. We don't want to initialize it with zeros to aid kernel
         // in conserving memory (first-touch policy).
@@ -55,16 +57,16 @@ impl Process {
 impl Drop for Process {
     fn drop(&mut self) {
         if let Err(e) = self.kill(Signal::SIGTERM) {
-            log::error!("failed to kill {}: {}", self.id, e);
+            error!("failed to kill {}: {}", self.id, e);
             return;
         }
         if let Err(e) = self.wait() {
-            log::error!("failed to wait for {}: {}", self.id, e);
+            error!("failed to wait for {}: {}", self.id, e);
         }
     }
 }
 
-// A version of the clone that accepts FnOnce instead of FnMut.
+// A  clone(2) wrapper that accepts FnOnce instead of FnMut.
 unsafe fn clone<F: FnOnce() -> c_int>(
     mut cb: F,
     stack: &mut [u8],
