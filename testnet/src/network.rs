@@ -127,6 +127,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         }
         all_node_configs.push(node_config);
     }
+    let mut ipc_fds: Vec<(OwnedFd, OwnedFd)> = Vec::with_capacity(all_node_configs.len());
     for i in 0..all_node_configs.len() {
         let outer = outer_ifname(i);
         netlink.new_veth_pair(outer.clone(), INNER_IFNAME)?;
@@ -134,10 +135,23 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         netlink.set_bridge(outer, bridge_index)?;
         let (pipe_in, pipe_out) = pipe()?;
         let pipe_out_fd = pipe_out.as_raw_fd();
+        let (in_self, in_other) = pipe()?;
+        let in_other_fd = in_other.as_raw_fd();
+        let (out_self, out_other) = pipe()?;
+        let out_other_fd = out_other.as_raw_fd();
         let callback = config.callback.clone();
         let all_node_configs = all_node_configs.clone();
         let process = Process::spawn(
-            || network_node_main(pipe_out_fd, i, callback, all_node_configs),
+            || {
+                network_node_main(
+                    pipe_out_fd,
+                    in_other_fd,
+                    out_other_fd,
+                    i,
+                    callback,
+                    all_node_configs,
+                )
+            },
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
         )?;
@@ -145,9 +159,13 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         // notify the child process
         drop(pipe_in);
         drop(pipe_out);
+        // drop unused pipe ends
+        drop(in_other);
+        drop(out_other);
         nodes.push(process);
+        ipc_fds.push((in_self, out_self));
     }
-    let mut ipc_server = IpcServer::new(Vec::new())?;
+    let mut ipc_server = IpcServer::new(ipc_fds)?;
     ipc_server.run()?;
     let mut all_ret = Vec::with_capacity(nodes.len());
     for node in nodes.into_iter() {
@@ -174,11 +192,13 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
 
 fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
     fd: RawFd,
+    ipc_in_fd: RawFd,
+    ipc_out_fd: RawFd,
     i: usize,
     callback: F,
     node_config: Vec<NodeConfig>,
 ) -> c_int {
-    match do_network_node_main(fd, i, callback, node_config) {
+    match do_network_node_main(fd, ipc_in_fd, ipc_out_fd, i, callback, node_config) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("child main failed: {}", e);
@@ -189,6 +209,8 @@ fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
 
 fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     fd: RawFd,
+    _ipc_in_fd: RawFd,
+    _ipc_out_fd: RawFd,
     i: usize,
     callback: F,
     nodes: Vec<NodeConfig>,

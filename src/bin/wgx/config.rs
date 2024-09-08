@@ -519,6 +519,11 @@ mod tests {
             &HashSet::from([Ipv4Addr::new(10, 0, 0, 1).into()]),
         )
         .is_err());
+        assert!(random_ip_address(
+            IpNet::new(Ipv4Addr::new(0, 0, 0, 0).into(), 0).unwrap(),
+            &Default::default(),
+        )
+        .is_ok());
     }
 
     impl<'a> Arbitrary<'a> for Config {
