@@ -43,6 +43,11 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", env!("VERSION"));
         return Ok(());
     }
+    // TODO write each node's env variables to a separate file
+    // TODO provide message bus for IPC between the nodes
+    // TODO replace i, node_config with generic Context to easily add new fields to the context
+    // TODO spawning node processes is slow
+    // TODO prefix output with node name
     let config = NetConfig {
         callback: |i, node: Vec<NodeConfig>| {
             Err(Command::new(&args.program)
@@ -51,6 +56,10 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
                 .env("TESTNET_NODE_NAME", &node[i].name)
                 .env("TESTNET_NODE_IFADDR", node[i].ifaddr.to_string())
                 .env("TESTNET_NODE_IPADDR", node[i].ifaddr.addr().to_string())
+                .env(
+                    "TESTNET_NODE_PREFIX_LEN",
+                    node[i].ifaddr.prefix_len().to_string(),
+                )
                 .exec()
                 .into())
         },

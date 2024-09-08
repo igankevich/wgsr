@@ -26,17 +26,13 @@ impl Log for Logger {
     }
 
     fn log(&self, record: &Record) {
+        use std::fmt::Write;
         if !self.enabled(record.metadata()) {
             return;
         }
         let mut buffer = String::with_capacity(4096);
-        {
-            use std::fmt::Write;
-            let _ = writeln!(&mut buffer, "{}", record.args());
-        }
-        {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(buffer.as_bytes());
+        if write!(&mut buffer, "{}", record.args()).is_ok() {
+            eprintln!("{}", buffer);
         }
     }
 

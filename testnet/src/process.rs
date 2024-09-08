@@ -4,10 +4,11 @@ use std::ffi::c_void;
 use log::error;
 use nix::errno::Errno;
 use nix::sched::CloneFlags;
-use nix::sys::signal::kill;
+use nix::sys::signal::killpg;
 use nix::sys::signal::Signal;
 use nix::sys::wait::waitpid;
 use nix::sys::wait::WaitStatus;
+use nix::unistd::setpgid;
 use nix::unistd::Pid;
 
 pub struct Process {
@@ -42,7 +43,7 @@ impl Process {
     }
 
     pub fn kill(&self, signal: Signal) -> Result<(), Errno> {
-        kill(self.id, signal)
+        killpg(self.id, signal)
     }
 
     pub fn wait(&self) -> Result<WaitStatus, Errno> {
@@ -56,12 +57,18 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        if let Err(e) = self.kill(Signal::SIGTERM) {
-            error!("failed to kill {}: {}", self.id, e);
-            return;
+        match self.kill(Signal::SIGTERM) {
+            Ok(_) => {}
+            Err(Errno::ESRCH) => return,
+            Err(e) => {
+                error!("failed to kill process group {}: {}", self.id, e);
+                return;
+            }
         }
-        if let Err(e) = self.wait() {
-            error!("failed to wait for {}: {}", self.id, e);
+        match self.wait() {
+            Ok(_) => {}
+            Err(Errno::ECHILD) => {}
+            Err(e) => error!("failed to wait for process {}: {}", self.id, e),
         }
     }
 }
@@ -74,6 +81,12 @@ unsafe fn clone<F: FnOnce() -> c_int>(
     signal: Option<c_int>,
 ) -> Result<Pid, Errno> {
     extern "C" fn callback<F: FnOnce() -> c_int>(data: *mut c_void) -> c_int {
+        // make all child processes belong to the same process group
+        let this = Pid::this();
+        if let Err(e) = setpgid(this, this) {
+            error!("failed to set process group to {}: {}", this, e);
+            return 1;
+        }
         unsafe {
             let cb: *mut F = std::mem::transmute(data);
             std::ptr::read(cb)()

@@ -1,4 +1,5 @@
 use std::ffi::c_int;
+use std::ffi::CString;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
@@ -27,6 +28,7 @@ use netlink_packet_route::link::LinkMessage;
 use netlink_packet_route::RouteNetlinkMessage;
 use nix::errno::Errno;
 use nix::sched::CloneFlags;
+use nix::sys::prctl::set_name;
 use nix::sys::socket::socket;
 use nix::sys::socket::AddressFamily;
 use nix::sys::socket::SockFlag;
@@ -99,15 +101,15 @@ fn do_network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + 
     fd: RawFd,
     config: NetConfig<F>,
 ) -> CallbackResult {
+    set_process_name("switch")?;
+    sethostname("switch")?;
     // wait for uid/gid mappings to be done by the parent process
     wait_for_fd_to_close(fd)?;
-    sethostname("switch")?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
-    netlink.set_up("lo")?;
     netlink.new_bridge("testnet")?;
     let bridge_index = netlink.index("testnet")?;
     let mut nodes: Vec<Process> = Vec::with_capacity(config.nodes.len());
-    let net = IpNet::new(Ipv4Addr::new(10, 107, 0, 0).into(), 16)?;
+    let net = IpNet::new(Ipv4Addr::new(10, 84, 0, 0).into(), 16)?;
     let mut all_node_configs = Vec::with_capacity(config.nodes.len());
     for (i, mut node_config) in config.nodes.into_iter().enumerate() {
         if node_config.name.is_empty() {
@@ -187,13 +189,15 @@ fn do_network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
     callback: F,
     node_config: Vec<NodeConfig>,
 ) -> CallbackResult {
+    set_process_name(&node_config[i].name)?;
+    sethostname(&node_config[i].name)?;
     // wait for veth to be trasnferred to this process' network namespace
     wait_for_fd_to_close(fd)?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
+    netlink.set_up("lo")?;
     let inner_index = netlink.index(INNER_IFNAME)?;
     netlink.set_up(INNER_IFNAME)?;
     netlink.set_ifaddr(inner_index, node_config[i].ifaddr)?;
-    sethostname(&node_config[i].name)?;
     callback(i, node_config).map_err(|e| format!("error in node main: {}", e).into())
 }
 
@@ -410,6 +414,12 @@ fn wait_status_to_string(status: WaitStatus) -> String {
 
 fn outer_ifname(i: usize) -> String {
     format!("n{}", i)
+}
+
+fn set_process_name(name: &str) -> Result<(), std::io::Error> {
+    let name = format!("testnet/{}", name);
+    let c_string = CString::new(name)?;
+    Ok(set_name(c_string.as_c_str())?)
 }
 
 const STACK_SIZE: usize = 4096 * 16;

@@ -11,3 +11,4 @@ log = "0.4.22"
 netlink-packet-core = "0.7.0"
 netlink-packet-route = "0.20.1"
 nix = { version = "0.29.0", features = ["sched", "process", "signal", "hostname", "user", "socket"], default-features = false }
+tempfile = "3.12.0"

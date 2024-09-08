@@ -46,19 +46,19 @@ impl ChildHR for Child {
 }
 
 fn failed_to_execute(command: &Command, e: Error) -> Error {
-    let executable = command.get_program().to_string_lossy();
+    let args = command_args_to_string(command);
     Error::new(
         ErrorKind::Other,
-        format!("failed to execute `{}`: {}", executable, e),
+        format!("failed to execute `{}`: {}", args, e),
     )
 }
 
 fn check_status(command: &Command, status: ExitStatus) -> Result<(), Error> {
     if !status.success() {
-        let executable = command.get_program().to_string_lossy();
+        let args = command_args_to_string(command);
         Err(Error::new(
             ErrorKind::Other,
-            format!("`{}` failed: {}", executable, status_to_string(status)),
+            format!("`{}` failed: {}", args, status_to_string(status)),
         ))
     } else {
         Ok(())
@@ -70,4 +70,14 @@ fn status_to_string(status: ExitStatus) -> String {
         Some(code) => format!("exited with status code {}", code),
         None => "terminated by signal".to_string(),
     }
+}
+
+fn command_args_to_string(command: &Command) -> String {
+    let mut args = String::with_capacity(4096);
+    args.push_str(command.get_program().to_string_lossy().to_string().as_str());
+    for arg in command.get_args() {
+        args.push(' ');
+        args.push_str(arg.to_string_lossy().to_string().as_str());
+    }
+    args
 }

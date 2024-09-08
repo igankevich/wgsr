@@ -48,6 +48,12 @@ impl From<wgx::Base64Error> for Error {
     }
 }
 
+impl From<ipnet::PrefixLenError> for Error {
+    fn from(other: ipnet::PrefixLenError) -> Self {
+        Self(other.to_string())
+    }
+}
+
 #[macro_export]
 macro_rules! format_error {
     ($($args:expr),*) => {
