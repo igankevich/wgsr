@@ -42,6 +42,7 @@ use nix::unistd::Pid;
 use nix::unistd::Uid;
 
 use crate::CallbackResult;
+use crate::Context;
 use crate::NetConfig;
 use crate::NodeConfig;
 use crate::Process;
@@ -51,7 +52,7 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
+    pub fn new<F: FnOnce(Context) -> CallbackResult + Clone>(
         config: NetConfig<F>,
     ) -> Result<Self, std::io::Error> {
         let (pipe_in, pipe_out) = pipe()?;
@@ -84,7 +85,7 @@ impl Network {
     }
 }
 
-fn network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
+fn network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
     fd: RawFd,
     config: NetConfig<F>,
 ) -> c_int {
@@ -97,7 +98,7 @@ fn network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clo
     }
 }
 
-fn do_network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
+fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
     fd: RawFd,
     config: NetConfig<F>,
 ) -> CallbackResult {
@@ -168,7 +169,7 @@ fn do_network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + 
     }
 }
 
-fn network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
+fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
     fd: RawFd,
     i: usize,
     callback: F,
@@ -183,22 +184,26 @@ fn network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
     }
 }
 
-fn do_network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
+fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     fd: RawFd,
     i: usize,
     callback: F,
-    node_config: Vec<NodeConfig>,
+    nodes: Vec<NodeConfig>,
 ) -> CallbackResult {
-    set_process_name(&node_config[i].name)?;
-    sethostname(&node_config[i].name)?;
+    set_process_name(&nodes[i].name)?;
+    sethostname(&nodes[i].name)?;
     // wait for veth to be trasnferred to this process' network namespace
     wait_for_fd_to_close(fd)?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
     netlink.set_up("lo")?;
     let inner_index = netlink.index(INNER_IFNAME)?;
     netlink.set_up(INNER_IFNAME)?;
-    netlink.set_ifaddr(inner_index, node_config[i].ifaddr)?;
-    callback(i, node_config).map_err(|e| format!("error in node main: {}", e).into())
+    netlink.set_ifaddr(inner_index, nodes[i].ifaddr)?;
+    let context = Context {
+        node_index: i,
+        nodes,
+    };
+    callback(context).map_err(|e| format!("error in node main: {}", e).into())
 }
 
 struct Netlink {

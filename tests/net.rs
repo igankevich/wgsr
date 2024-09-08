@@ -29,11 +29,15 @@ fn testnet() {
     let random_bytes: Vec<u8> = generate_random_bytes();
     std::fs::write(workdir.path().join("random-file"), random_bytes).unwrap();
     let config = NetConfig {
-        callback: |i, node: Vec<NodeConfig>| match i {
-            RELAY_NODE_INDEX => relay_main(&node[i]),
-            HUB_NODE_INDEX => hub_main(&node[RELAY_NODE_INDEX], workdir.path()),
-            SPOKE_NODE_INDEX => spoke_main(&node[RELAY_NODE_INDEX], workdir.path()),
-            _ => Err("invalid node index".into()),
+        callback: |context| {
+            let i = context.current_node_index();
+            let nodes = context.nodes();
+            match i {
+                RELAY_NODE_INDEX => relay_main(&nodes[i]),
+                HUB_NODE_INDEX => hub_main(&nodes[RELAY_NODE_INDEX], workdir.path()),
+                SPOKE_NODE_INDEX => spoke_main(&nodes[RELAY_NODE_INDEX], workdir.path()),
+                _ => Err("invalid node index".into()),
+            }
         },
         nodes: vec![Default::default(); 3],
     };

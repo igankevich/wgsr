@@ -2,7 +2,6 @@ use std::process::Command;
 
 use testnet::NetConfig;
 use testnet::Network;
-use testnet::NodeConfig;
 
 #[test]
 fn net2() {
@@ -15,10 +14,12 @@ fn net2() {
         },
     ];
     let config = NetConfig {
-        callback: |i, node: Vec<NodeConfig>| {
+        callback: |context| {
+            let i = context.current_node_index();
+            let node = context.current_node();
             eprintln!(
                 "hello from node {} name {:?} tag {:?}",
-                i, node[i].name, user_config[i].tag
+                i, node.name, user_config[i].tag
             );
             Command::new("ip").args(["address"]).status()?;
             let j = match i {
@@ -26,7 +27,7 @@ fn net2() {
                 _ => 0,
             };
             Command::new("ping")
-                .args(["-c", "1", &node[j].ifaddr.addr().to_string()])
+                .args(["-c", "1", &context.nodes()[j].ifaddr.addr().to_string()])
                 .status()?;
             Ok(())
         },

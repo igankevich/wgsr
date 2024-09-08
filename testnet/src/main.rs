@@ -6,7 +6,6 @@ use std::process::ExitCode;
 use clap::Parser;
 use testnet::NetConfig;
 use testnet::Network;
-use testnet::NodeConfig;
 
 #[derive(Parser)]
 #[command(
@@ -45,20 +44,23 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // TODO write each node's env variables to a separate file
     // TODO provide message bus for IPC between the nodes
-    // TODO replace i, node_config with generic Context to easily add new fields to the context
     // TODO spawning node processes is slow
     // TODO prefix output with node name
     let config = NetConfig {
-        callback: |i, node: Vec<NodeConfig>| {
+        callback: |context| {
+            let node = context.current_node();
             Err(Command::new(&args.program)
                 .args(&args.args)
-                .env("TESTNET_NODE_INDEX", i.to_string())
-                .env("TESTNET_NODE_NAME", &node[i].name)
-                .env("TESTNET_NODE_IFADDR", node[i].ifaddr.to_string())
-                .env("TESTNET_NODE_IPADDR", node[i].ifaddr.addr().to_string())
+                .env(
+                    "TESTNET_NODE_INDEX",
+                    context.current_node_index().to_string(),
+                )
+                .env("TESTNET_NODE_NAME", &node.name)
+                .env("TESTNET_NODE_IFADDR", node.ifaddr.to_string())
+                .env("TESTNET_NODE_IPADDR", node.ifaddr.addr().to_string())
                 .env(
                     "TESTNET_NODE_PREFIX_LEN",
-                    node[i].ifaddr.prefix_len().to_string(),
+                    node.ifaddr.prefix_len().to_string(),
                 )
                 .exec()
                 .into())
