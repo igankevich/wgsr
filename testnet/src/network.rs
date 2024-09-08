@@ -7,6 +7,7 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::fd::RawFd;
 
+use crate::IpcServer;
 use ipnet::IpNet;
 use netlink_packet_core::NetlinkDeserializable;
 use netlink_packet_core::NetlinkMessage;
@@ -146,6 +147,8 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         drop(pipe_out);
         nodes.push(process);
     }
+    let mut ipc_server = IpcServer::new(Vec::new())?;
+    ipc_server.run()?;
     let mut all_ret = Vec::with_capacity(nodes.len());
     for node in nodes.into_iter() {
         let status = node.wait()?;

@@ -661,10 +661,10 @@ dependencies = [
  "clap",
  "ipnet",
  "log",
+ "mio",
  "netlink-packet-core",
  "netlink-packet-route",
  "nix",
- "tempfile",
 ]
 
 [[package]]

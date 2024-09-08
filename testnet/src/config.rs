@@ -34,4 +34,13 @@ impl Context {
     pub fn nodes(&self) -> &[NodeConfig] {
         &self.nodes
     }
+
+    /// Advance the global state.
+    ///
+    /// Synchronize with all other nodes.
+    /// Submit arbitrary `data` as a part of the global state.
+    pub fn sync(&mut self, _data: Vec<u8>) -> Result<(), std::io::Error> {
+        // TODO
+        Ok(())
+    }
 }
