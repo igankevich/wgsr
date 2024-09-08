@@ -5,7 +5,7 @@ use testnet::Network;
 
 #[test]
 fn net2() {
-    let user_config = vec![
+    let user_config = [
         UserConfig {
             tag: "first".into(),
         },

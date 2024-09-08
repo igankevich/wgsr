@@ -9,7 +9,7 @@ jobs:
       credentials:
         username: token
         password: ${{ secrets.GHCR_TOKEN }}
-      options: --cap-add SYS_PTRACE --volume "/var/run/docker.sock:/var/run/docker.sock"
+      options: --cap-add SYS_PTRACE --cap-add NET_ADMIN --volume "/var/run/docker.sock:/var/run/docker.sock"
     permissions:
       packages: write
       contents: write
