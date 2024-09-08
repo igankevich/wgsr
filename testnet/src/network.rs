@@ -49,8 +49,8 @@ pub struct Network {
 }
 
 impl Network {
-    pub fn new<C: Clone, F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackResult + Clone>(
-        config: NetConfig<F, C>,
+    pub fn new<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
+        config: NetConfig<F>,
     ) -> Result<Self, std::io::Error> {
         let (pipe_in, pipe_out) = pipe()?;
         let pipe_out_fd = pipe_out.as_raw_fd();
@@ -82,12 +82,9 @@ impl Network {
     }
 }
 
-fn network_switch_main<
-    C: Clone,
-    F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackResult + Clone,
->(
+fn network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
     fd: RawFd,
-    config: NetConfig<F, C>,
+    config: NetConfig<F>,
 ) -> c_int {
     match do_network_switch_main(fd, config) {
         Ok(_) => 0,
@@ -98,12 +95,9 @@ fn network_switch_main<
     }
 }
 
-fn do_network_switch_main<
-    C: Clone,
-    F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackResult + Clone,
->(
+fn do_network_switch_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult + Clone>(
     fd: RawFd,
-    config: NetConfig<F, C>,
+    config: NetConfig<F>,
 ) -> CallbackResult {
     // wait for uid/gid mappings to be done by the parent process
     wait_for_fd_to_close(fd)?;
@@ -115,13 +109,12 @@ fn do_network_switch_main<
     let mut nodes: Vec<Process> = Vec::with_capacity(config.nodes.len());
     let net = IpNet::new(Ipv4Addr::new(10, 107, 0, 0).into(), 16)?;
     let mut all_node_configs = Vec::with_capacity(config.nodes.len());
-    let mut all_user_configs = Vec::with_capacity(config.nodes.len());
-    for (i, (mut node_config, user_config)) in config.nodes.into_iter().enumerate() {
+    for (i, mut node_config) in config.nodes.into_iter().enumerate() {
         if node_config.name.is_empty() {
             node_config.name = outer_ifname(i);
         }
-        if node_config.ipaddr.addr().is_unspecified() {
-            node_config.ipaddr = IpNet::new(
+        if node_config.ifaddr.addr().is_unspecified() {
+            node_config.ifaddr = IpNet::new(
                 net.hosts()
                     .nth(i)
                     .ok_or("exhausted available IP adddress range")?,
@@ -129,7 +122,6 @@ fn do_network_switch_main<
             )?;
         }
         all_node_configs.push(node_config);
-        all_user_configs.push(user_config);
     }
     for i in 0..all_node_configs.len() {
         let outer = outer_ifname(i);
@@ -140,9 +132,8 @@ fn do_network_switch_main<
         let pipe_out_fd = pipe_out.as_raw_fd();
         let callback = config.callback.clone();
         let all_node_configs = all_node_configs.clone();
-        let all_user_configs = all_user_configs.clone();
         let process = Process::spawn(
-            || network_node_main(pipe_out_fd, i, callback, all_node_configs, all_user_configs),
+            || network_node_main(pipe_out_fd, i, callback, all_node_configs),
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
         )?;
@@ -175,14 +166,13 @@ fn do_network_switch_main<
     }
 }
 
-fn network_node_main<C, F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackResult>(
+fn network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
     fd: RawFd,
     i: usize,
     callback: F,
     node_config: Vec<NodeConfig>,
-    user_config: Vec<C>,
 ) -> c_int {
-    match do_network_node_main(fd, i, callback, node_config, user_config) {
+    match do_network_node_main(fd, i, callback, node_config) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("child main failed: {}", e);
@@ -191,21 +181,20 @@ fn network_node_main<C, F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackRes
     }
 }
 
-fn do_network_node_main<C, F: FnOnce(usize, Vec<NodeConfig>, Vec<C>) -> CallbackResult>(
+fn do_network_node_main<F: FnOnce(usize, Vec<NodeConfig>) -> CallbackResult>(
     fd: RawFd,
     i: usize,
     callback: F,
     node_config: Vec<NodeConfig>,
-    user_config: Vec<C>,
 ) -> CallbackResult {
     // wait for veth to be trasnferred to this process' network namespace
     wait_for_fd_to_close(fd)?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
     let inner_index = netlink.index(INNER_IFNAME)?;
     netlink.set_up(INNER_IFNAME)?;
-    netlink.set_ip_address(inner_index, node_config[i].ipaddr)?;
+    netlink.set_ifaddr(inner_index, node_config[i].ifaddr)?;
     sethostname(&node_config[i].name)?;
-    callback(i, node_config, user_config).map_err(|e| format!("error in node main: {}", e).into())
+    callback(i, node_config).map_err(|e| format!("error in node main: {}", e).into())
 }
 
 struct Netlink {
@@ -312,21 +301,21 @@ impl Netlink {
         Ok(())
     }
 
-    pub fn set_ip_address(&mut self, index: u32, address: IpNet) -> Result<(), std::io::Error> {
+    pub fn set_ifaddr(&mut self, index: u32, ifaddr: IpNet) -> Result<(), std::io::Error> {
         use netlink_packet_route::AddressFamily;
         let mut message = AddressMessage::default();
-        message.header.prefix_len = address.prefix_len();
+        message.header.prefix_len = ifaddr.prefix_len();
         message.header.index = index;
-        message.header.family = match address {
+        message.header.family = match ifaddr {
             IpNet::V4(_) => AddressFamily::Inet,
             IpNet::V6(_) => AddressFamily::Inet6,
         };
         message
             .attributes
-            .push(AddressAttribute::Address(address.addr()));
+            .push(AddressAttribute::Address(ifaddr.addr()));
         message
             .attributes
-            .push(AddressAttribute::Local(address.addr()));
+            .push(AddressAttribute::Local(ifaddr.addr()));
         let mut message = NetlinkMessage::from(RouteNetlinkMessage::NewAddress(message));
         message.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
         message.finalize();

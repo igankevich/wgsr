@@ -7,7 +7,7 @@ license = "GPL-3.0"
 [dependencies]
 base64ct = { version = "1.6.0", features = ["std", "alloc"], default-features = false }
 bincode = { version = "2.0.0-rc.3", features = ["std", "serde", "derive"], default-features = false }
-clap = { version = "4.5.16", features = ["std", "derive", "help", "usage"], default-features = false }
+clap = { version = "4.5.17", features = ["std", "derive", "help", "usage"], default-features = false }
 colored = "2.1.0"
 ctrlc = { version = "3.4.4", features = ["termination"], default-features = false }
 ipnet = { version = "2.9.0", features = ["std"], default-features = false }

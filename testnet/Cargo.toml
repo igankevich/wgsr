@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+clap = { version = "4.5.17", features = ["std", "derive", "help", "usage"], default-features = false }
 ipnet = "2.9.0"
 log = "0.4.22"
 netlink-packet-core = "0.7.0"
