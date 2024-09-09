@@ -7,7 +7,6 @@ use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::fd::RawFd;
 
-use crate::IpcServer;
 use ipnet::IpNet;
 use netlink_packet_core::NetlinkDeserializable;
 use netlink_packet_core::NetlinkMessage;
@@ -44,6 +43,8 @@ use nix::unistd::Uid;
 
 use crate::CallbackResult;
 use crate::Context;
+use crate::IpcClient;
+use crate::IpcServer;
 use crate::NetConfig;
 use crate::NodeConfig;
 use crate::Process;
@@ -56,10 +57,9 @@ impl Network {
     pub fn new<F: FnOnce(Context) -> CallbackResult + Clone>(
         config: NetConfig<F>,
     ) -> Result<Self, std::io::Error> {
-        let (pipe_in, pipe_out) = pipe()?;
-        let pipe_out_fd = pipe_out.as_raw_fd();
+        let (sender, receiver) = pipe_channel()?;
         let main = Process::spawn(
-            || network_switch_main(pipe_out_fd, config),
+            || network_switch_main(receiver.into(), config),
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWUTS,
         )?;
@@ -76,8 +76,7 @@ impl Network {
             format!("0 {} 1", Gid::current()),
         )?;
         // notify the child process
-        drop(pipe_in);
-        drop(pipe_out);
+        sender.close();
         Ok(Self { main })
     }
 
@@ -87,10 +86,10 @@ impl Network {
 }
 
 fn network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
-    fd: RawFd,
+    receiver: PipeReceiver,
     config: NetConfig<F>,
 ) -> c_int {
-    match do_network_switch_main(fd, config) {
+    match do_network_switch_main(receiver, config) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("network main failed: {}", e);
@@ -100,13 +99,13 @@ fn network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
 }
 
 fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
-    fd: RawFd,
+    receiver: PipeReceiver,
     config: NetConfig<F>,
 ) -> CallbackResult {
     set_process_name("switch")?;
     sethostname("switch")?;
     // wait for uid/gid mappings to be done by the parent process
-    wait_for_fd_to_close(fd)?;
+    receiver.wait_until_closed()?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
     netlink.new_bridge("testnet")?;
     let bridge_index = netlink.index("testnet")?;
@@ -133,18 +132,24 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         netlink.new_veth_pair(outer.clone(), INNER_IFNAME)?;
         netlink.set_up(outer.clone())?;
         netlink.set_bridge(outer, bridge_index)?;
-        let (pipe_in, pipe_out) = pipe()?;
-        let pipe_out_fd = pipe_out.as_raw_fd();
-        let (in_self, in_other) = pipe()?;
+        let (sender, receiver) = pipe_channel()?;
+        let (in_self, out_other) = pipe()?;
+        let (in_other, out_self) = pipe()?;
+        let in_self_fd = in_self.as_raw_fd();
         let in_other_fd = in_other.as_raw_fd();
-        let (out_self, out_other) = pipe()?;
+        let out_self_fd = out_self.as_raw_fd();
         let out_other_fd = out_other.as_raw_fd();
         let callback = config.callback.clone();
         let all_node_configs = all_node_configs.clone();
         let process = Process::spawn(
             || {
+                // drop unused pipe ends
+                unsafe {
+                    OwnedFd::from_raw_fd(in_self_fd);
+                    OwnedFd::from_raw_fd(out_self_fd);
+                }
                 network_node_main(
-                    pipe_out_fd,
+                    receiver.into(),
                     in_other_fd,
                     out_other_fd,
                     i,
@@ -157,8 +162,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         )?;
         netlink.set_network_namespace(INNER_IFNAME, process.id())?;
         // notify the child process
-        drop(pipe_in);
-        drop(pipe_out);
+        sender.close();
         // drop unused pipe ends
         drop(in_other);
         drop(out_other);
@@ -191,14 +195,14 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
 }
 
 fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
-    fd: RawFd,
+    receiver: PipeReceiver,
     ipc_in_fd: RawFd,
     ipc_out_fd: RawFd,
     i: usize,
     callback: F,
     node_config: Vec<NodeConfig>,
 ) -> c_int {
-    match do_network_node_main(fd, ipc_in_fd, ipc_out_fd, i, callback, node_config) {
+    match do_network_node_main(receiver, ipc_in_fd, ipc_out_fd, i, callback, node_config) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("child main failed: {}", e);
@@ -208,9 +212,9 @@ fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
 }
 
 fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
-    fd: RawFd,
-    _ipc_in_fd: RawFd,
-    _ipc_out_fd: RawFd,
+    receiver: PipeReceiver,
+    ipc_in_fd: RawFd,
+    ipc_out_fd: RawFd,
     i: usize,
     callback: F,
     nodes: Vec<NodeConfig>,
@@ -218,15 +222,18 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     set_process_name(&nodes[i].name)?;
     sethostname(&nodes[i].name)?;
     // wait for veth to be trasnferred to this process' network namespace
-    wait_for_fd_to_close(fd)?;
+    receiver.wait_until_closed()?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
     netlink.set_up("lo")?;
     let inner_index = netlink.index(INNER_IFNAME)?;
     netlink.set_up(INNER_IFNAME)?;
     netlink.set_ifaddr(inner_index, nodes[i].ifaddr)?;
+    let ipc_in_fd = unsafe { OwnedFd::from_raw_fd(ipc_in_fd) };
+    let ipc_out_fd = unsafe { OwnedFd::from_raw_fd(ipc_out_fd) };
     let context = Context {
         node_index: i,
         nodes,
+        ipc_client: IpcClient::new(ipc_in_fd, ipc_out_fd),
     };
     callback(context).map_err(|e| format!("error in node main: {}", e).into())
 }
@@ -422,12 +429,67 @@ fn check_ok<I: Debug>(message: NetlinkMessage<I>) -> Result<NetlinkMessage<I>, s
     Ok(message)
 }
 
-fn wait_for_fd_to_close(fd: RawFd) -> Result<(), std::io::Error> {
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    let mut buf = [0_u8; 1];
-    let _ = nix::unistd::read(fd.as_raw_fd(), &mut buf);
-    drop(fd);
-    Ok(())
+fn pipe_channel() -> Result<(PipeSender, RawPipeReceiver), std::io::Error> {
+    let (pipe_in, pipe_out) = pipe()?;
+    let receiver = RawPipeReceiver::new(pipe_in.as_raw_fd(), pipe_out.as_raw_fd());
+    let sender = PipeSender::new(pipe_in, pipe_out);
+    Ok((sender, receiver))
+}
+
+struct RawPipeReceiver {
+    fd_in: RawFd,
+    fd_out: RawFd,
+}
+
+impl RawPipeReceiver {
+    fn new(fd_in: RawFd, fd_out: RawFd) -> Self {
+        Self { fd_in, fd_out }
+    }
+}
+
+struct PipeReceiver {
+    fd: OwnedFd,
+}
+
+impl PipeReceiver {
+    fn new(fd_in: RawFd, fd_out: RawFd) -> Self {
+        // drop sender
+        unsafe { OwnedFd::from_raw_fd(fd_out) };
+        Self {
+            fd: unsafe { OwnedFd::from_raw_fd(fd_in) },
+        }
+    }
+
+    fn wait_until_closed(&self) -> Result<(), std::io::Error> {
+        let mut buf = [0_u8; 1];
+        let ret = nix::unistd::read(self.fd.as_raw_fd(), &mut buf)?;
+        eprintln!("wait_until_closed ret {:?}", ret);
+        Ok(())
+    }
+}
+
+impl From<RawPipeReceiver> for PipeReceiver {
+    fn from(other: RawPipeReceiver) -> Self {
+        Self::new(other.fd_in, other.fd_out)
+    }
+}
+
+struct PipeSender {
+    #[allow(dead_code)]
+    fd_in: OwnedFd,
+    #[allow(dead_code)]
+    fd_out: OwnedFd,
+}
+
+impl PipeSender {
+    fn new(fd_in: OwnedFd, fd_out: OwnedFd) -> Self {
+        // drop receiver
+        Self { fd_in, fd_out }
+    }
+
+    fn close(self) {
+        // drop self
+    }
 }
 
 fn wait_status_ok(status: &WaitStatus) -> bool {

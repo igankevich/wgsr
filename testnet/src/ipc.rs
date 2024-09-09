@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -27,6 +28,7 @@ pub(crate) struct IpcServer {
     poll: Poll,
     clients: Vec<IpcClient>,
     state: IpcStateMachine,
+    finished: HashMap<usize, bool>,
 }
 
 impl IpcServer {
@@ -48,6 +50,7 @@ impl IpcServer {
             poll,
             clients,
             state: IpcStateMachine::new(num_nodes),
+            finished: Default::default(),
         })
     }
 
@@ -58,7 +61,7 @@ impl IpcServer {
     pub(crate) fn run(&mut self) -> Result<(), std::io::Error> {
         let mut events = Events::with_capacity(self.clients.len());
         let n = self.clients.len();
-        loop {
+        while self.finished.len() != n {
             events.clear();
             match self.poll.poll(&mut events, None) {
                 Ok(()) => Ok(()),
@@ -69,14 +72,14 @@ impl IpcServer {
                 let ret = match event.token() {
                     WAKE_TOKEN => return Ok(()),
                     // input fds
-                    token @ Token(i) if (0..n).contains(&i) => {
-                        self.clients[i].on_event(event, token, &mut self.poll, &mut self.state, i)
-                    }
+                    Token(i) if (0..n).contains(&i) => self.on_event(event, Token(i + n), i),
                     // output fds
-                    token @ Token(i) if (n..(n + n)).contains(&i) => {
+                    token @ Token(i) if (n..(2 * n)).contains(&i) => {
                         let i = i - n;
-                        self.clients[i].on_event(event, token, &mut self.poll, &mut self.state, i)
+                        self.on_event(event, token, i)
                     }
+                    // pid fds TODO
+                    //Token(i) if ((2 * n)..(3 * n)).contains(&i) => {}
                     Token(i) => Err(std::io::Error::other(format!("unknown event {}", i))),
                 };
                 if let Err(e) = ret {
@@ -84,66 +87,85 @@ impl IpcServer {
                 }
             }
         }
+        Ok(())
     }
-}
 
-struct IpcClient {
-    reader: BufReader<File>,
-    writer: BufWriter<File>,
-}
-
-impl IpcClient {
-    fn new(in_fd: OwnedFd, out_fd: OwnedFd) -> Self {
-        Self {
-            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
-            writer: BufWriter::with_capacity(MAX_MESSAGE_SIZE, out_fd.into()),
+    fn handle_finished(&mut self, event: &Event, i: usize) {
+        if event.is_error() {
+            self.finished.insert(i, false);
+        }
+        if event.is_read_closed() || event.is_write_closed() {
+            self.finished.insert(i, true);
         }
     }
 
     fn on_event(
         &mut self,
         event: &Event,
-        token: Token,
-        poll: &mut Poll,
-        state: &mut IpcStateMachine,
-        node_index: usize,
+        writer_token: Token,
+        i: usize,
     ) -> Result<(), std::io::Error> {
+        self.handle_finished(event, i);
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
-            self.fill_buf()?;
-            while let Some(message) = self.receive_message()? {
-                state
-                    .on_message(message, node_index)
+            self.clients[i].fill_buf()?;
+            while let Some(message) = self.clients[i].receive()? {
+                eprintln!("recv {:?}", message);
+                self.state
+                    .on_message(message, i, &mut self.clients, writer_token, &mut self.poll)
                     .map_err(std::io::Error::other)?;
             }
-            if !self.flush()? {
-                interest = Some(Interest::READABLE | Interest::WRITABLE);
+            if !self.clients[i].flush()? {
+                interest = Some(Interest::WRITABLE);
             }
         }
-        if event.is_writable() && self.flush()? {
+        let client = &mut self.clients[i];
+        if event.is_writable() && client.flush()? {
             interest = Some(Interest::READABLE);
         }
-        if let Some(interest) = interest {
-            poll.registry().reregister(
-                &mut SourceFd(&self.writer.get_ref().as_raw_fd()),
-                token,
-                interest,
-            )?;
+        match interest {
+            Some(Interest::READABLE) => self
+                .poll
+                .registry()
+                .deregister(&mut SourceFd(&client.writer.get_ref().as_raw_fd()))?,
+            Some(Interest::WRITABLE) => {
+                self.poll.registry().reregister(
+                    &mut SourceFd(&client.writer.get_ref().as_raw_fd()),
+                    writer_token,
+                    Interest::WRITABLE,
+                )?;
+            }
+            _ => {}
         }
         Ok(())
     }
+}
 
-    fn fill_buf(&mut self) -> Result<(), std::io::Error> {
-        self.reader.fill_buf()?;
+pub(crate) struct IpcClient {
+    reader: BufReader<File>,
+    writer: BufWriter<File>,
+}
+
+impl IpcClient {
+    pub(crate) fn new(in_fd: OwnedFd, out_fd: OwnedFd) -> Self {
+        Self {
+            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
+            writer: BufWriter::with_capacity(MAX_MESSAGE_SIZE, out_fd.into()),
+        }
+    }
+
+    pub(crate) fn fill_buf(&mut self) -> Result<(), std::io::Error> {
+        let n = self.reader.fill_buf()?.len();
+        eprintln!("fill_buf {}", n);
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<bool, std::io::Error> {
+    pub(crate) fn flush(&mut self) -> Result<bool, std::io::Error> {
         self.writer.flush()?;
         Ok(self.writer.buffer().is_empty())
     }
 
-    fn receive_message(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
+    pub(crate) fn receive(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
         match IpcMessage::decode(&mut self.reader) {
             Ok(message) => Ok(Some(message)),
             Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
@@ -151,10 +173,25 @@ impl IpcClient {
         }
     }
 
-    fn _send_message(&mut self, message: &IpcMessage) -> Result<(), std::io::Error> {
+    pub(crate) fn send(&mut self, message: &IpcMessage) -> Result<(), std::io::Error> {
         message
             .encode(&mut self.writer)
             .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    pub(crate) fn send_finalize(
+        &mut self,
+        writer_token: Token,
+        poll: &mut Poll,
+    ) -> Result<(), std::io::Error> {
+        if !self.flush()? {
+            poll.registry().reregister(
+                &mut SourceFd(&self.writer.get_ref().as_raw_fd()),
+                writer_token,
+                Interest::WRITABLE,
+            )?;
+        }
         Ok(())
     }
 }

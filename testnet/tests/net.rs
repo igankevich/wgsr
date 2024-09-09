@@ -37,6 +37,33 @@ fn net2() {
     network.wait().unwrap();
 }
 
+#[test]
+fn ipc() {
+    let config = NetConfig {
+        callback: |mut context| {
+            let i = context.current_node_index();
+            match i {
+                0 => {
+                    eprintln!("node {i} send start");
+                    context.send("ping".into())?;
+                    eprintln!("node {i} send end");
+                }
+                _ => {
+                    eprintln!("node {i} receive start");
+                    let data = context.receive()?;
+                    eprintln!("node {i} receive end");
+                    let string = String::from_utf8(data).unwrap();
+                    assert_eq!("ping", string);
+                }
+            };
+            Ok(())
+        },
+        nodes: vec![Default::default(), Default::default()],
+    };
+    let network = Network::new(config).unwrap();
+    network.wait().unwrap();
+}
+
 struct UserConfig {
     tag: String,
 }

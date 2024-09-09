@@ -12,7 +12,7 @@ use bincode::Encode;
 
 use crate::MAX_MESSAGE_SIZE;
 
-#[derive(Decode, Encode)]
+#[derive(Decode, Encode, Debug)]
 pub(crate) enum IpcMessage {
     Send(BroadcastPayload),
     Receive,

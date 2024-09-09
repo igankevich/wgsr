@@ -3,7 +3,11 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use mio::Poll;
+use mio::Token;
+
 use crate::BroadcastPayload;
+use crate::IpcClient;
 use crate::IpcMessage;
 
 pub(crate) struct IpcStateMachine {
@@ -26,6 +30,9 @@ impl IpcStateMachine {
         &mut self,
         message: IpcMessage,
         from_node_index: usize,
+        clients: &mut [IpcClient],
+        writer_token: Token,
+        poll: &mut Poll,
     ) -> Result<(), IpcStateMachineError> {
         match message {
             IpcMessage::Send(payload) => {
@@ -45,8 +52,13 @@ impl IpcStateMachine {
                 self.insert_broadcast(from_node_index, Broadcast::Wait)?;
             }
         }
+        eprintln!(
+            "{}/{} broadcast request received",
+            self.broadcasts.len(),
+            self.num_nodes
+        );
         if self.broadcasts.len() == self.num_nodes {
-            self.finalize_broadcast()?;
+            self.finalize_broadcast(clients, writer_token, poll)?;
         }
         Ok(())
     }
@@ -68,8 +80,13 @@ impl IpcStateMachine {
         }
     }
 
-    fn finalize_broadcast(&mut self) -> Result<(), IpcStateMachineError> {
-        let _initiator = match self.broadcast_initiator {
+    fn finalize_broadcast(
+        &mut self,
+        clients: &mut [IpcClient],
+        writer_token: Token,
+        poll: &mut Poll,
+    ) -> Result<(), IpcStateMachineError> {
+        let initiator = match self.broadcast_initiator {
             Some(initiator) => initiator,
             None => {
                 return Err(IpcStateMachineError(
@@ -77,7 +94,30 @@ impl IpcStateMachine {
                 ))
             }
         };
-        // TODO
+        // replace Broadcast::Payload with Broadcast::Wait
+        let payload = self
+            .broadcasts
+            .insert(initiator, Broadcast::Wait)
+            .ok_or_else(|| IpcStateMachineError("broadcast payload is missing".into()))?;
+        let payload = match payload {
+            Broadcast::Send(data) => data,
+            _ => return Err(IpcStateMachineError("initiator sent wrong message".into())),
+        };
+        eprintln!("sending broadcast response");
+        for (i, broadcast) in self.broadcasts.drain() {
+            let message = match broadcast {
+                Broadcast::Receive => IpcMessage::Send(payload.clone()),
+                Broadcast::Wait => IpcMessage::Wait,
+                _ => continue,
+            };
+            eprintln!("send {:?} response to {}", message, i);
+            clients[i]
+                .send(&message)
+                .map_err(|e| IpcStateMachineError(e.to_string()))?;
+            clients[i]
+                .send_finalize(writer_token, poll)
+                .map_err(|e| IpcStateMachineError(e.to_string()))?;
+        }
         self.broadcasts.clear();
         self.broadcast_initiator = None;
         Ok(())
