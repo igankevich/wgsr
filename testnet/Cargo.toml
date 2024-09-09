@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+bincode = { version = "2.0.0-rc.3", features = ["std", "serde", "derive"], default-features = false }
 clap = { version = "4.5.17", features = ["std", "derive", "help", "usage"], default-features = false }
 ipnet = "2.9.0"
 log = "0.4.22"

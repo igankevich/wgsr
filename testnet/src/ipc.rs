@@ -6,6 +6,7 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::OwnedFd;
 
+use bincode::error::DecodeError;
 use log::error;
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -18,9 +19,14 @@ use nix::fcntl::fcntl;
 use nix::fcntl::FcntlArg;
 use nix::fcntl::OFlag;
 
+use crate::IpcEncodeDecode;
+use crate::IpcMessage;
+use crate::IpcStateMachine;
+
 pub(crate) struct IpcServer {
     poll: Poll,
     clients: Vec<IpcClient>,
+    state: IpcStateMachine,
 }
 
 impl IpcServer {
@@ -37,7 +43,12 @@ impl IpcServer {
             )?;
             clients.push(IpcClient::new(in_fd, out_fd));
         }
-        Ok(Self { poll, clients })
+        let num_nodes = clients.len();
+        Ok(Self {
+            poll,
+            clients,
+            state: IpcStateMachine::new(num_nodes),
+        })
     }
 
     pub(crate) fn _waker(&self) -> Result<Waker, std::io::Error> {
@@ -59,12 +70,12 @@ impl IpcServer {
                     WAKE_TOKEN => return Ok(()),
                     // input fds
                     token @ Token(i) if (0..n).contains(&i) => {
-                        self.clients[i].on_event(event, token, &mut self.poll)
+                        self.clients[i].on_event(event, token, &mut self.poll, &mut self.state, i)
                     }
                     // output fds
                     token @ Token(i) if (n..(n + n)).contains(&i) => {
                         let i = i - n;
-                        self.clients[i].on_event(event, token, &mut self.poll)
+                        self.clients[i].on_event(event, token, &mut self.poll, &mut self.state, i)
                     }
                     Token(i) => Err(std::io::Error::other(format!("unknown event {}", i))),
                 };
@@ -84,8 +95,8 @@ struct IpcClient {
 impl IpcClient {
     fn new(in_fd: OwnedFd, out_fd: OwnedFd) -> Self {
         Self {
-            reader: BufReader::with_capacity(MAX_REQUEST_SIZE, in_fd.into()),
-            writer: BufWriter::with_capacity(MAX_RESPONSE_SIZE, out_fd.into()),
+            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
+            writer: BufWriter::with_capacity(MAX_MESSAGE_SIZE, out_fd.into()),
         }
     }
 
@@ -94,11 +105,17 @@ impl IpcClient {
         event: &Event,
         token: Token,
         poll: &mut Poll,
+        state: &mut IpcStateMachine,
+        node_index: usize,
     ) -> Result<(), std::io::Error> {
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
-            self.reader.fill_buf()?;
-            // TODO
+            self.fill_buf()?;
+            while let Some(message) = self.receive_message()? {
+                state
+                    .on_message(message, node_index)
+                    .map_err(std::io::Error::other)?;
+            }
             if !self.flush()? {
                 interest = Some(Interest::READABLE | Interest::WRITABLE);
             }
@@ -116,12 +133,31 @@ impl IpcClient {
         Ok(())
     }
 
+    fn fill_buf(&mut self) -> Result<(), std::io::Error> {
+        self.reader.fill_buf()?;
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<bool, std::io::Error> {
         self.writer.flush()?;
         Ok(self.writer.buffer().is_empty())
     }
+
+    fn receive_message(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
+        match IpcMessage::decode(&mut self.reader) {
+            Ok(message) => Ok(Some(message)),
+            Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
+            Err(e) => Err(std::io::Error::other(e)),
+        }
+    }
+
+    fn _send_message(&mut self, message: &IpcMessage) -> Result<(), std::io::Error> {
+        message
+            .encode(&mut self.writer)
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
 }
 
 const WAKE_TOKEN: Token = Token(usize::MAX);
-const MAX_REQUEST_SIZE: usize = 4096 * 16;
-const MAX_RESPONSE_SIZE: usize = MAX_REQUEST_SIZE;
+pub(crate) const MAX_MESSAGE_SIZE: usize = 4096 * 16;
