@@ -2,6 +2,7 @@ use std::ffi::c_int;
 use std::ffi::c_void;
 
 use log::error;
+use mio_pidfd::PidFd;
 use nix::errno::Errno;
 use nix::sched::CloneFlags;
 use nix::sys::signal::killpg;
@@ -52,6 +53,10 @@ impl Process {
 
     pub fn id(&self) -> Pid {
         self.id
+    }
+
+    pub fn fd(&self) -> Result<PidFd, std::io::Error> {
+        PidFd::open(self.id.as_raw(), 0)
     }
 }
 

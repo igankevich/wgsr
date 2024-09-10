@@ -8,6 +8,7 @@ use std::os::fd::OwnedFd;
 use std::os::fd::RawFd;
 
 use ipnet::IpNet;
+use mio_pidfd::PidFd;
 use netlink_packet_core::NetlinkDeserializable;
 use netlink_packet_core::NetlinkMessage;
 use netlink_packet_core::NetlinkPayload;
@@ -126,7 +127,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         }
         all_node_configs.push(node_config);
     }
-    let mut ipc_fds: Vec<(OwnedFd, OwnedFd)> = Vec::with_capacity(all_node_configs.len());
+    let mut ipc_fds: Vec<(OwnedFd, OwnedFd, PidFd)> = Vec::with_capacity(all_node_configs.len());
     for i in 0..all_node_configs.len() {
         let outer = outer_ifname(i);
         netlink.new_veth_pair(outer.clone(), INNER_IFNAME)?;
@@ -166,8 +167,9 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         // drop unused pipe ends
         drop(in_other);
         drop(out_other);
+        let pid_fd = process.fd()?;
+        ipc_fds.push((in_self, out_self, pid_fd));
         nodes.push(process);
-        ipc_fds.push((in_self, out_self));
     }
     let mut ipc_server = IpcServer::new(ipc_fds)?;
     ipc_server.run()?;

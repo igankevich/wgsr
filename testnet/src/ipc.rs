@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::os::fd::OwnedFd;
 
 use bincode::error::DecodeError;
@@ -16,9 +17,13 @@ use mio::Interest;
 use mio::Poll;
 use mio::Token;
 use mio::Waker;
+use mio_pidfd::PidFd;
 use nix::fcntl::fcntl;
 use nix::fcntl::FcntlArg;
 use nix::fcntl::OFlag;
+use nix::sys::wait::waitid;
+use nix::sys::wait::WaitPidFlag;
+use nix::sys::wait::WaitStatus;
 
 use crate::IpcEncodeDecode;
 use crate::IpcMessage;
@@ -27,28 +32,37 @@ use crate::IpcStateMachine;
 pub(crate) struct IpcServer {
     poll: Poll,
     clients: Vec<IpcClient>,
+    pid_fds: Vec<PidFd>,
     state: IpcStateMachine,
     finished: HashMap<usize, bool>,
 }
 
 impl IpcServer {
-    pub(crate) fn new(fds: Vec<(OwnedFd, OwnedFd)>) -> Result<Self, std::io::Error> {
+    pub(crate) fn new(fds: Vec<(OwnedFd, OwnedFd, PidFd)>) -> Result<Self, std::io::Error> {
         let poll = Poll::new()?;
         let mut clients = Vec::with_capacity(fds.len());
-        for (i, (in_fd, out_fd)) in fds.into_iter().enumerate() {
+        let mut pid_fds = Vec::with_capacity(fds.len());
+        for (i, (in_fd, out_fd, pid_fd)) in fds.into_iter().enumerate() {
             fcntl(in_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             fcntl(out_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             poll.registry().register(
                 &mut SourceFd(&in_fd.as_raw_fd()),
-                Token(i),
+                fd_in_token(i),
+                Interest::READABLE,
+            )?;
+            poll.registry().register(
+                &mut SourceFd(&pid_fd.as_raw_fd()),
+                pid_fd_token(i),
                 Interest::READABLE,
             )?;
             clients.push(IpcClient::new(in_fd, out_fd));
+            pid_fds.push(pid_fd);
         }
         let num_nodes = clients.len();
         Ok(Self {
             poll,
             clients,
+            pid_fds,
             state: IpcStateMachine::new(num_nodes),
             finished: Default::default(),
         })
@@ -71,15 +85,18 @@ impl IpcServer {
             for event in events.iter() {
                 let ret = match event.token() {
                     WAKE_TOKEN => return Ok(()),
-                    // input fds
-                    Token(i) if (0..n).contains(&i) => self.on_event(event, Token(i + n), i),
-                    // output fds
-                    token @ Token(i) if (n..(2 * n)).contains(&i) => {
-                        let i = i - n;
-                        self.on_event(event, token, i)
+                    token @ Token(i) if (0..(NUM_FDS * n)).contains(&i) => {
+                        let i = token_to_client_index(token);
+                        match FdKind::new(token) {
+                            FdKind::In | FdKind::Out => self.on_event(event, token, i),
+                            FdKind::Pid => {
+                                if self.handle_finished(event, i) && self.process_failed(i)? {
+                                    return Err(std::io::Error::other(format!("node {i} failed")));
+                                }
+                                Ok(())
+                            }
+                        }
                     }
-                    // pid fds TODO
-                    //Token(i) if ((2 * n)..(3 * n)).contains(&i) => {}
                     Token(i) => Err(std::io::Error::other(format!("unknown event {}", i))),
                 };
                 if let Err(e) = ret {
@@ -90,13 +107,16 @@ impl IpcServer {
         Ok(())
     }
 
-    fn handle_finished(&mut self, event: &Event, i: usize) {
+    fn handle_finished(&mut self, event: &Event, i: usize) -> bool {
         if event.is_error() {
             self.finished.insert(i, false);
+            return true;
         }
         if event.is_read_closed() || event.is_write_closed() {
             self.finished.insert(i, true);
+            return true;
         }
+        false
     }
 
     fn on_event(
@@ -138,6 +158,15 @@ impl IpcServer {
             _ => {}
         }
         Ok(())
+    }
+
+    fn process_failed(&mut self, i: usize) -> Result<bool, std::io::Error> {
+        use nix::sys::wait::Id;
+        let status = waitid(
+            Id::PIDFd(unsafe { BorrowedFd::borrow_raw(self.pid_fds[i].as_raw_fd()) }),
+            WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
+        )?;
+        Ok(status_is_failure(status))
     }
 }
 
@@ -196,5 +225,42 @@ impl IpcClient {
     }
 }
 
+fn fd_in_token(i: usize) -> Token {
+    Token(NUM_FDS * i)
+}
+
+fn pid_fd_token(i: usize) -> Token {
+    Token(NUM_FDS * i + 2)
+}
+
+fn token_to_client_index(token: Token) -> usize {
+    token.0 / NUM_FDS
+}
+
+enum FdKind {
+    In,
+    Out,
+    Pid,
+}
+
+impl FdKind {
+    fn new(token: Token) -> Self {
+        match token.0 % NUM_FDS {
+            0 => Self::In,
+            1 => Self::Out,
+            _ => Self::Pid,
+        }
+    }
+}
+
+fn status_is_failure(status: WaitStatus) -> bool {
+    match status {
+        WaitStatus::Exited(_, code) if code != 0 => true,
+        WaitStatus::Signaled(..) => true,
+        _ => false,
+    }
+}
+
 const WAKE_TOKEN: Token = Token(usize::MAX);
+const NUM_FDS: usize = 3;
 pub(crate) const MAX_MESSAGE_SIZE: usize = 4096 * 16;

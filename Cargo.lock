@@ -405,6 +405,18 @@ dependencies = [
 
 [[package]]
 name = "mio"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
+dependencies = [
+ "libc",
+ "log",
+ "wasi",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "mio"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80e04d1dcff3aae0704555fe5fee3bcfaf3d1fdf8a7e521d5b9d2b42acb52cec"
@@ -413,6 +425,16 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "mio-pidfd"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "098a0cc8167b28187be58802d1a6491b9c8d4dad9da3ffca1ca06cd1fda4a7db"
+dependencies = [
+ "libc",
+ "mio 0.8.11",
 ]
 
 [[package]]
@@ -662,7 +684,8 @@ dependencies = [
  "clap",
  "ipnet",
  "log",
- "mio",
+ "mio 1.0.2",
+ "mio-pidfd",
  "netlink-packet-core",
  "netlink-packet-route",
  "nix",
@@ -758,7 +781,7 @@ dependencies = [
  "ipnet",
  "libc",
  "log",
- "mio",
+ "mio 1.0.2",
  "network-interface",
  "qrencode",
  "rand",

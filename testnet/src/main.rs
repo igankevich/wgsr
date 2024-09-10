@@ -43,7 +43,6 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // TODO write each node's env variables to a separate file
-    // TODO provide message bus for IPC between the nodes
     // TODO spawning node processes is slow
     // TODO prefix output with node name
     let config = NetConfig {
