@@ -27,7 +27,7 @@ impl Wgxd {
         Self::with_port(random_port())
     }
 
-    pub fn with_port(listen_port: NonZeroU16) -> Self {
+    fn with_port(listen_port: NonZeroU16) -> Self {
         use std::fmt::Write;
         let workdir = tempdir().unwrap();
         let config_file = workdir.path().join("wgxd.conf");

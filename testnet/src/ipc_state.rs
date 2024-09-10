@@ -52,11 +52,6 @@ impl IpcStateMachine {
                 self.insert_broadcast(from_node_index, Broadcast::Wait)?;
             }
         }
-        eprintln!(
-            "{}/{} broadcast request received",
-            self.broadcasts.len(),
-            self.num_nodes
-        );
         if self.broadcasts.len() == self.num_nodes {
             self.finalize_broadcast(clients, writer_token, poll)?;
         }
@@ -103,14 +98,12 @@ impl IpcStateMachine {
             Broadcast::Send(data) => data,
             _ => return Err(IpcStateMachineError("initiator sent wrong message".into())),
         };
-        eprintln!("sending broadcast response");
         for (i, broadcast) in self.broadcasts.drain() {
             let message = match broadcast {
                 Broadcast::Receive => IpcMessage::Send(payload.clone()),
                 Broadcast::Wait => IpcMessage::Wait,
                 _ => continue,
             };
-            eprintln!("send {:?} response to {}", message, i);
             clients[i]
                 .send(&message)
                 .map_err(|e| IpcStateMachineError(e.to_string()))?;

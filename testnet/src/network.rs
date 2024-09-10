@@ -236,6 +236,8 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
         node_index: i,
         nodes,
         ipc_client: IpcClient::new(ipc_in_fd, ipc_out_fd),
+        step_name: None,
+        step: 0,
     };
     callback(context).map_err(|e| format!("error in node main: {}", e).into())
 }
@@ -464,8 +466,7 @@ impl PipeReceiver {
 
     fn wait_until_closed(&self) -> Result<(), std::io::Error> {
         let mut buf = [0_u8; 1];
-        let ret = nix::unistd::read(self.fd.as_raw_fd(), &mut buf)?;
-        eprintln!("wait_until_closed ret {:?}", ret);
+        nix::unistd::read(self.fd.as_raw_fd(), &mut buf)?;
         Ok(())
     }
 }

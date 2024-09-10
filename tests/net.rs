@@ -2,6 +2,7 @@
 #![allow(clippy::panic)]
 
 use std::ffi::OsStr;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 use std::thread::sleep;
@@ -11,9 +12,9 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use tempfile::tempdir;
 use test_bin::get_test_bin;
+use testnet::Context;
 use testnet::NetConfig;
 use testnet::Network;
-use testnet::NodeConfig;
 
 use crate::logger::Logger;
 use crate::wgxd::Wgxd;
@@ -31,11 +32,10 @@ fn testnet() {
     let config = NetConfig {
         callback: |context| {
             let i = context.current_node_index();
-            let nodes = context.nodes();
             match i {
-                RELAY_NODE_INDEX => relay_main(&nodes[i]),
-                HUB_NODE_INDEX => hub_main(&nodes[RELAY_NODE_INDEX], workdir.path()),
-                SPOKE_NODE_INDEX => spoke_main(&nodes[RELAY_NODE_INDEX], workdir.path()),
+                RELAY_NODE_INDEX => relay_main(context),
+                HUB_NODE_INDEX => hub_main(context, workdir.path()),
+                SPOKE_NODE_INDEX => spoke_main(context, workdir.path()),
                 _ => Err("invalid node index".into()),
             }
         },
@@ -45,16 +45,24 @@ fn testnet() {
     network.wait().unwrap();
 }
 
-fn relay_main(config: &NodeConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let wgxd = Wgxd::with_port(RELAY_PORT.try_into().unwrap());
+fn relay_main(mut context: Context) -> Result<(), Box<dyn std::error::Error>> {
+    let i = context.current_node_index();
+    let wgxd = Wgxd::new();
     wgxd.wait_until_started();
-    log::info!("started relay on {}:{}", config.ifaddr.addr(), RELAY_PORT);
-    sleep(Duration::from_secs(7));
-    log::info!("relay exited");
+    let config = &context.nodes()[i];
+    let relay_socket_addr = SocketAddr::new(config.ifaddr.addr(), wgxd.listen_port());
+    context.step("start relay");
+    context.send(relay_socket_addr.to_string().into())?;
+    context.wait()?;
+    context.wait()?;
     Ok(())
 }
 
-fn hub_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn hub_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let relay_socket_addr = context.receive()?;
+    let relay_socket_addr = String::from_utf8(relay_socket_addr)?;
+    let relay_socket_addr: SocketAddr = relay_socket_addr.parse()?;
+    context.step("start hub");
     let config_file = workdir.join("hub.conf");
     assert!(get_test_bin("wgx")
         .args([
@@ -62,7 +70,7 @@ fn hub_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn std
             OsStr::new("-c"),
             config_file.as_os_str(),
             OsStr::new("init"),
-            OsStr::new(format!("{}:{}", relay_config.ifaddr.addr(), RELAY_PORT).as_str())
+            OsStr::new(relay_socket_addr.to_string().as_str())
         ])
         .status()
         .unwrap()
@@ -115,14 +123,26 @@ fn hub_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn std
         .current_dir(workdir)
         .spawn()
         .unwrap();
-    sleep(Duration::from_secs(7));
-    log::info!("hub exited");
+    wait_until_started(
+        "python http server",
+        Command::new("curl").args([
+            "--fail",
+            "--silent",
+            "--head",
+            "http://127.0.0.1:8000/random-file",
+        ]),
+    )?;
+    context.send("hub started".into())?;
+    context.wait()?;
     Ok(())
 }
 
-fn spoke_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    sleep(Duration::from_secs(3));
-    log::info!("spoke started");
+fn spoke_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let relay_socket_addr = context.receive()?;
+    let relay_socket_addr = String::from_utf8(relay_socket_addr)?;
+    let relay_socket_addr: SocketAddr = relay_socket_addr.parse()?;
+    context.wait()?;
+    context.step("start spoke");
     let config_file = workdir.join("spoke.conf");
     assert!(get_test_bin("wgx")
         .args([
@@ -130,7 +150,7 @@ fn spoke_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn s
             OsStr::new("-c"),
             config_file.as_os_str(),
             OsStr::new("init"),
-            OsStr::new(format!("{}:{}", relay_config.ifaddr.addr(), RELAY_PORT).as_str())
+            OsStr::new(relay_socket_addr.to_string().as_str())
         ])
         .status()
         .unwrap()
@@ -145,20 +165,11 @@ fn spoke_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn s
         .status()
         .unwrap()
         .success());
-    eprintln!("hub");
-    Command::new("cat")
-        .args([workdir.join("hub.conf")])
-        .status()
-        .unwrap();
-    eprintln!("spoke");
-    Command::new("cat")
-        .args([workdir.join("spoke.conf")])
-        .status()
-        .unwrap();
     let hub_inner_ipaddr = "10.120.0.1";
     assert!(Command::new("curl")
         .args([
             OsStr::new("--fail"),
+            OsStr::new("--silent"),
             OsStr::new("--retry"),
             OsStr::new("3"),
             OsStr::new("--connect-timeout"),
@@ -174,7 +185,7 @@ fn spoke_main(relay_config: &NodeConfig, workdir: &Path) -> Result<(), Box<dyn s
         std::fs::read(workdir.join("downloaded-random-file")).unwrap(),
         std::fs::read(workdir.join("random-file")).unwrap(),
     );
-    log::info!("spoke exited");
+    context.send("spoke exited".into())?;
     Ok(())
 }
 
@@ -184,7 +195,23 @@ fn generate_random_bytes() -> Vec<u8> {
     bytes
 }
 
+fn wait_until_started(name: &str, command: &mut Command) -> Result<(), std::io::Error> {
+    const NUM_SECONDS: usize = 7;
+    for i in 1..=NUM_SECONDS {
+        let output = command.output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if i >= 3 {
+            eprintln!("waiting for {name} to start... {i}");
+        }
+        sleep(Duration::from_millis(777));
+    }
+    Err(std::io::Error::other(format!(
+        "{name} has not stared in {NUM_SECONDS}s"
+    )))
+}
+
 const RELAY_NODE_INDEX: usize = 0;
 const HUB_NODE_INDEX: usize = 1;
 const SPOKE_NODE_INDEX: usize = 2;
-const RELAY_PORT: u16 = 8787;

@@ -18,6 +18,7 @@ use mio::Poll;
 use mio::Token;
 use mio::Waker;
 use mio_pidfd::PidFd;
+use nix::errno::Errno;
 use nix::fcntl::fcntl;
 use nix::fcntl::FcntlArg;
 use nix::fcntl::OFlag;
@@ -90,7 +91,8 @@ impl IpcServer {
                         match FdKind::new(token) {
                             FdKind::In | FdKind::Out => self.on_event(event, token, i),
                             FdKind::Pid => {
-                                if self.handle_finished(event, i) && self.process_failed(i)? {
+                                self.handle_finished(event, i);
+                                if self.process_failed(i)? {
                                     return Err(std::io::Error::other(format!("node {i} failed")));
                                 }
                                 Ok(())
@@ -107,16 +109,13 @@ impl IpcServer {
         Ok(())
     }
 
-    fn handle_finished(&mut self, event: &Event, i: usize) -> bool {
+    fn handle_finished(&mut self, event: &Event, i: usize) {
         if event.is_error() {
             self.finished.insert(i, false);
-            return true;
         }
         if event.is_read_closed() || event.is_write_closed() {
             self.finished.insert(i, true);
-            return true;
         }
-        false
     }
 
     fn on_event(
@@ -130,7 +129,6 @@ impl IpcServer {
         if event.is_readable() {
             self.clients[i].fill_buf()?;
             while let Some(message) = self.clients[i].receive()? {
-                eprintln!("recv {:?}", message);
                 self.state
                     .on_message(message, i, &mut self.clients, writer_token, &mut self.poll)
                     .map_err(std::io::Error::other)?;
@@ -162,11 +160,27 @@ impl IpcServer {
 
     fn process_failed(&mut self, i: usize) -> Result<bool, std::io::Error> {
         use nix::sys::wait::Id;
-        let status = waitid(
+        let status = match waitid(
             Id::PIDFd(unsafe { BorrowedFd::borrow_raw(self.pid_fds[i].as_raw_fd()) }),
             WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
-        )?;
-        Ok(status_is_failure(status))
+        ) {
+            Ok(status) => Some(status),
+            Err(Errno::EINVAL) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let finished = match status {
+            Some(WaitStatus::Exited(..)) => true,
+            Some(WaitStatus::Signaled(..)) => true,
+            Some(_) => false,
+            None => true,
+        };
+        if finished {
+            self.finished.insert(i, true);
+        }
+        match status {
+            Some(status) => Ok(status_is_failure(status)),
+            None => Ok(false),
+        }
     }
 }
 
@@ -184,8 +198,7 @@ impl IpcClient {
     }
 
     pub(crate) fn fill_buf(&mut self) -> Result<(), std::io::Error> {
-        let n = self.reader.fill_buf()?.len();
-        eprintln!("fill_buf {}", n);
+        self.reader.fill_buf()?;
         Ok(())
     }
 
