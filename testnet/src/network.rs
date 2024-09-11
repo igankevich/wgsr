@@ -59,10 +59,12 @@ impl Network {
         config: NetConfig<F>,
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = pipe_channel()?;
+        let receiver_fd_in = receiver.fd_in;
         let main = Process::spawn(
             || network_switch_main(receiver.into(), config),
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWUTS,
+            vec![receiver_fd_in],
         )?;
         // update uid map
         std::fs::write(
@@ -134,6 +136,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         netlink.set_up(outer.clone())?;
         netlink.set_bridge(outer, bridge_index)?;
         let (sender, receiver) = pipe_channel()?;
+        let receiver_fd_in = receiver.fd_in;
         let (in_self, out_other) = pipe()?;
         let (in_other, out_self) = pipe()?;
         let in_self_fd = in_self.as_raw_fd();
@@ -160,6 +163,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
             },
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
+            vec![receiver_fd_in, in_other_fd, out_other_fd],
         )?;
         netlink.set_network_namespace(INNER_IFNAME, process.id())?;
         // notify the child process

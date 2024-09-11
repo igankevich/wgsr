@@ -13,4 +13,4 @@ mio = { version = "1.0.1", features = ["net", "os-poll", "os-ext"], default-feat
 mio-pidfd = "0.3.0"
 netlink-packet-core = "0.7.0"
 netlink-packet-route = "0.20.1"
-nix = { version = "0.29.0", features = ["sched", "process", "signal", "hostname", "user", "socket", "fs"], default-features = false }
+nix = { version = "0.29.0", features = ["sched", "process", "signal", "hostname", "user", "socket", "fs", "poll"], default-features = false }

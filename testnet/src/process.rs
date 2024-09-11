@@ -1,9 +1,17 @@
 use std::ffi::c_int;
 use std::ffi::c_void;
+use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
+use std::os::fd::RawFd;
 
 use log::error;
 use mio_pidfd::PidFd;
 use nix::errno::Errno;
+use nix::poll::poll;
+use nix::poll::PollFd;
+use nix::poll::PollFlags;
+use nix::poll::PollTimeout;
 use nix::sched::CloneFlags;
 use nix::sys::signal::killpg;
 use nix::sys::signal::Signal;
@@ -24,6 +32,7 @@ impl Process {
         child_main: F,
         stack_size: usize,
         flags: CloneFlags,
+        inherited_fds: Vec<RawFd>,
     ) -> Result<Self, Errno> {
         let stack_size = stack_size | 16;
         let mut stack = Vec::with_capacity(stack_size);
@@ -34,7 +43,10 @@ impl Process {
         }
         let id = unsafe {
             clone(
-                child_main,
+                || {
+                    close_unused_fds(inherited_fds);
+                    child_main()
+                },
                 &mut stack,
                 flags,
                 Some(Signal::SIGCHLD as c_int),
@@ -109,4 +121,39 @@ unsafe fn clone<F: FnOnce() -> c_int>(
         )
     };
     Errno::result(res).map(Pid::from_raw)
+}
+
+fn close_unused_fds(inherited_fds: Vec<RawFd>) {
+    let fd_min: RawFd = 3;
+    let fd_max: RawFd = 4096;
+    let batch_size: RawFd = 1024;
+    for fd in (fd_min..fd_max).step_by(batch_size as usize) {
+        let fd0 = fd;
+        let fd1 = (fd + batch_size).min(fd_max);
+        let mut fds: Vec<PollFd> = (fd0..fd1)
+            .filter_map(|fd| {
+                if !inherited_fds.contains(&fd) {
+                    Some(PollFd::new(
+                        unsafe { BorrowedFd::borrow_raw(fd) },
+                        PollFlags::empty(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if let Err(e) = poll(&mut fds, PollTimeout::ZERO) {
+            error!("poll failed: {e}");
+            continue;
+        }
+        for fd in fds.iter() {
+            if let Some(revents) = fd.revents() {
+                if !revents.contains(PollFlags::POLLNVAL) {
+                    if let Err(e) = nix::unistd::close(fd.as_fd().as_raw_fd()) {
+                        error!("close failed: {e}");
+                    }
+                }
+            }
+        }
+    }
 }
