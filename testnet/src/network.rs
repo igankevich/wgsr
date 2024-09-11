@@ -1,3 +1,4 @@
+use nix::unistd::dup2;
 use std::ffi::c_int;
 use std::ffi::CString;
 use std::fmt::Debug;
@@ -138,7 +139,8 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         }
         all_node_configs.push(node_config);
     }
-    let mut ipc_fds: Vec<(OwnedFd, OwnedFd, PidFd)> = Vec::with_capacity(all_node_configs.len());
+    let mut ipc_fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd)> =
+        Vec::with_capacity(all_node_configs.len());
     for i in 0..all_node_configs.len() {
         let outer = outer_ifname(i);
         netlink.new_veth_pair(outer.clone(), INNER_IFNAME)?;
@@ -148,10 +150,13 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         let receiver_fd_in = receiver.fd_in;
         let (in_self, out_other) = pipe()?;
         let (in_other, out_self) = pipe()?;
+        let (output_self, output_other) = pipe()?;
         let in_self_fd = in_self.as_raw_fd();
         let in_other_fd = in_other.as_raw_fd();
         let out_self_fd = out_self.as_raw_fd();
         let out_other_fd = out_other.as_raw_fd();
+        let output_other_fd = output_other.as_raw_fd();
+        let output_self_fd = output_self.as_raw_fd();
         let callback = config.callback.clone();
         let all_node_configs = all_node_configs.clone();
         let process = Process::spawn(
@@ -160,11 +165,13 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
                 unsafe {
                     OwnedFd::from_raw_fd(in_self_fd);
                     OwnedFd::from_raw_fd(out_self_fd);
+                    OwnedFd::from_raw_fd(output_self_fd);
                 }
                 network_node_main(
                     receiver.into(),
                     in_other_fd,
                     out_other_fd,
+                    output_other_fd,
                     i,
                     callback,
                     all_node_configs,
@@ -172,7 +179,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
             },
             STACK_SIZE,
             CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
-            vec![receiver_fd_in, in_other_fd, out_other_fd],
+            vec![receiver_fd_in, in_other_fd, out_other_fd, output_other_fd],
         )?;
         netlink.set_network_namespace(INNER_IFNAME, process.id())?;
         // notify the child process
@@ -180,8 +187,9 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         // drop unused pipe ends
         drop(in_other);
         drop(out_other);
+        drop(output_other);
         let pid_fd = process.fd()?;
-        ipc_fds.push((in_self, out_self, pid_fd));
+        ipc_fds.push((in_self, out_self, pid_fd, output_self));
         nodes.push(process);
     }
     let mut ipc_server = IpcServer::new(ipc_fds)?;
@@ -213,11 +221,20 @@ fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
     receiver: PipeReceiver,
     ipc_in_fd: RawFd,
     ipc_out_fd: RawFd,
+    output_fd: RawFd,
     i: usize,
     callback: F,
     node_config: Vec<NodeConfig>,
 ) -> c_int {
-    match do_network_node_main(receiver, ipc_in_fd, ipc_out_fd, i, callback, node_config) {
+    match do_network_node_main(
+        receiver,
+        ipc_in_fd,
+        ipc_out_fd,
+        output_fd,
+        i,
+        callback,
+        node_config,
+    ) {
         Ok(_) => 0,
         Err(e) => {
             eprintln!("child main failed: {}", e);
@@ -230,10 +247,16 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     receiver: PipeReceiver,
     ipc_in_fd: RawFd,
     ipc_out_fd: RawFd,
+    output_fd: RawFd,
     i: usize,
     callback: F,
     nodes: Vec<NodeConfig>,
 ) -> CallbackResult {
+    // redirect stdout/stderr
+    dup2(output_fd, 1)?;
+    dup2(output_fd, 2)?;
+    // clonse stdin
+    nix::unistd::close(0)?;
     set_process_name(&nodes[i].name)?;
     sethostname(&nodes[i].name)?;
     // wait for veth to be trasnferred to this process' network namespace

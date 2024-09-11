@@ -43,7 +43,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // TODO write each node's env variables to a separate file
-    // TODO spawning node processes is slow
+    // TODO netlink is slow (non-blocking?)
     // TODO prefix output with node name
     let config = NetConfig {
         callback: |context| {

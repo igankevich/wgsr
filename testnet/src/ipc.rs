@@ -34,18 +34,23 @@ pub(crate) struct IpcServer {
     poll: Poll,
     clients: Vec<IpcClient>,
     pid_fds: Vec<PidFd>,
+    output_readers: Vec<OutputReader>,
     state: IpcStateMachine,
     finished: HashMap<usize, bool>,
 }
 
 impl IpcServer {
-    pub(crate) fn new(fds: Vec<(OwnedFd, OwnedFd, PidFd)>) -> Result<Self, std::io::Error> {
+    pub(crate) fn new(
+        fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd)>,
+    ) -> Result<Self, std::io::Error> {
         let poll = Poll::new()?;
         let mut clients = Vec::with_capacity(fds.len());
         let mut pid_fds = Vec::with_capacity(fds.len());
-        for (i, (in_fd, out_fd, pid_fd)) in fds.into_iter().enumerate() {
+        let mut output_readers = Vec::with_capacity(fds.len());
+        for (i, (in_fd, out_fd, pid_fd, output_fd)) in fds.into_iter().enumerate() {
             fcntl(in_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             fcntl(out_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
+            fcntl(output_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             poll.registry().register(
                 &mut SourceFd(&in_fd.as_raw_fd()),
                 fd_in_token(i),
@@ -56,14 +61,21 @@ impl IpcServer {
                 pid_fd_token(i),
                 Interest::READABLE,
             )?;
+            poll.registry().register(
+                &mut SourceFd(&output_fd.as_raw_fd()),
+                output_fd_token(i),
+                Interest::READABLE,
+            )?;
             clients.push(IpcClient::new(in_fd, out_fd));
             pid_fds.push(pid_fd);
+            output_readers.push(OutputReader::new(output_fd));
         }
         let num_nodes = clients.len();
         Ok(Self {
             poll,
             clients,
             pid_fds,
+            output_readers,
             state: IpcStateMachine::new(num_nodes),
             finished: Default::default(),
         })
@@ -91,10 +103,15 @@ impl IpcServer {
                         match FdKind::new(token) {
                             FdKind::In | FdKind::Out => self.on_event(event, token, i),
                             FdKind::Pid => {
-                                self.handle_finished(event, i);
+                                //self.handle_finished(event, i);
                                 if self.process_failed(i)? {
                                     return Err(std::io::Error::other(format!("node {i} failed")));
                                 }
+                                Ok(())
+                            }
+                            FdKind::Output => {
+                                self.handle_finished(event, i);
+                                self.on_process_output(event, i)?;
                                 Ok(())
                             }
                         }
@@ -124,7 +141,7 @@ impl IpcServer {
         writer_token: Token,
         i: usize,
     ) -> Result<(), std::io::Error> {
-        self.handle_finished(event, i);
+        //self.handle_finished(event, i);
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
             self.clients[i].fill_buf()?;
@@ -182,6 +199,17 @@ impl IpcServer {
             None => Ok(false),
         }
     }
+
+    fn on_process_output(&mut self, event: &Event, i: usize) -> Result<(), std::io::Error> {
+        if event.is_readable() {
+            self.output_readers[i].print_lines(i)?;
+        }
+        if event.is_error() || event.is_read_closed() || event.is_write_closed() {
+            self.output_readers[i].print_lines(i)?;
+            self.output_readers[i].print_remaining(i)?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct IpcClient {
@@ -238,12 +266,58 @@ impl IpcClient {
     }
 }
 
+struct OutputReader {
+    reader: BufReader<File>,
+}
+
+impl OutputReader {
+    pub(crate) fn new(in_fd: OwnedFd) -> Self {
+        Self {
+            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
+        }
+    }
+
+    pub(crate) fn print_lines(&mut self, node: usize) -> Result<(), std::io::Error> {
+        let mut buf = self.reader.fill_buf()?;
+        let mut num_consumed: usize = 0;
+        while let Some(mut i) = buf.iter().position(|ch| *ch == b'\n') {
+            i += 1;
+            let mut line = Vec::new();
+            line.extend_from_slice(format!("n{}: ", node).as_bytes());
+            line.extend_from_slice(&buf[..i]);
+            std::io::stderr().write_all(&line)?;
+            num_consumed += i;
+            buf = &buf[i..];
+        }
+        self.reader.consume(num_consumed);
+        Ok(())
+    }
+
+    pub(crate) fn print_remaining(&mut self, node: usize) -> Result<(), std::io::Error> {
+        let buf = self.reader.buffer();
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let mut line = Vec::new();
+        line.extend_from_slice(format!("n{}: ", node).as_bytes());
+        line.extend_from_slice(buf);
+        line.push(b'\n');
+        std::io::stderr().write_all(&line)?;
+        self.reader.consume(buf.len());
+        Ok(())
+    }
+}
+
 fn fd_in_token(i: usize) -> Token {
     Token(NUM_FDS * i)
 }
 
 fn pid_fd_token(i: usize) -> Token {
     Token(NUM_FDS * i + 2)
+}
+
+fn output_fd_token(i: usize) -> Token {
+    Token(NUM_FDS * i + 3)
 }
 
 fn token_to_client_index(token: Token) -> usize {
@@ -254,6 +328,7 @@ enum FdKind {
     In,
     Out,
     Pid,
+    Output,
 }
 
 impl FdKind {
@@ -261,7 +336,8 @@ impl FdKind {
         match token.0 % NUM_FDS {
             0 => Self::In,
             1 => Self::Out,
-            _ => Self::Pid,
+            2 => Self::Pid,
+            _ => Self::Output,
         }
     }
 }
@@ -275,5 +351,5 @@ fn status_is_failure(status: WaitStatus) -> bool {
 }
 
 const WAKE_TOKEN: Token = Token(usize::MAX);
-const NUM_FDS: usize = 3;
+const NUM_FDS: usize = 4;
 pub(crate) const MAX_MESSAGE_SIZE: usize = 4096 * 16;
