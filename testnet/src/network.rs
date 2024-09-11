@@ -27,7 +27,6 @@ use netlink_packet_route::link::LinkFlags;
 use netlink_packet_route::link::LinkInfo;
 use netlink_packet_route::link::LinkMessage;
 use netlink_packet_route::RouteNetlinkMessage;
-use nix::errno::Errno;
 use nix::sched::CloneFlags;
 use nix::sys::prctl::set_name;
 use nix::sys::socket::socket;
@@ -83,8 +82,18 @@ impl Network {
         Ok(Self { main })
     }
 
-    pub fn wait(&self) -> Result<WaitStatus, Errno> {
-        self.main.wait()
+    pub fn wait(&self) -> Result<WaitStatus, std::io::Error> {
+        Ok(self.main.wait()?)
+    }
+}
+
+pub fn testnet<F: FnOnce(Context) -> CallbackResult + Clone>(
+    config: NetConfig<F>,
+) -> Result<(), std::io::Error> {
+    let network = Network::new(config)?;
+    match network.wait()? {
+        WaitStatus::Exited(_, 0) => Ok(()),
+        _ => Err(std::io::Error::other("some nodes failed")),
     }
 }
 

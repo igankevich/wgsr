@@ -12,9 +12,9 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use tempfile::tempdir;
 use test_bin::get_test_bin;
+use testnet::testnet;
 use testnet::Context;
 use testnet::NetConfig;
-use testnet::Network;
 
 use crate::logger::Logger;
 use crate::wgxd::Wgxd;
@@ -24,7 +24,7 @@ mod logger;
 mod wgxd;
 
 #[test]
-fn testnet() {
+fn run_testnet() {
     let _ = Logger::init(log::Level::Info);
     let workdir = tempdir().unwrap();
     let random_bytes: Vec<u8> = generate_random_bytes();
@@ -41,8 +41,7 @@ fn testnet() {
         },
         nodes: vec![Default::default(); 3],
     };
-    let network = Network::new(config).unwrap();
-    network.wait().unwrap();
+    testnet(config).unwrap();
 }
 
 fn relay_main(mut context: Context) -> Result<(), Box<dyn std::error::Error>> {

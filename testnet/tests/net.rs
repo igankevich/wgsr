@@ -1,7 +1,10 @@
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
+
 use std::process::Command;
 
+use testnet::testnet;
 use testnet::NetConfig;
-use testnet::Network;
 
 #[test]
 fn net2() {
@@ -33,8 +36,7 @@ fn net2() {
         },
         nodes: vec![Default::default(), Default::default()],
     };
-    let network = Network::new(config).unwrap();
-    network.wait().unwrap();
+    testnet(config).unwrap();
 }
 
 #[test]
@@ -60,8 +62,28 @@ fn ipc() {
         },
         nodes: vec![Default::default(), Default::default()],
     };
-    let network = Network::new(config).unwrap();
-    network.wait().unwrap();
+    testnet(config).unwrap();
+}
+
+#[test]
+#[should_panic]
+fn failure() {
+    let config = NetConfig {
+        callback: |context| {
+            let i = context.current_node_index();
+            match i {
+                0 => {
+                    // ok
+                }
+                _ => {
+                    panic!("this test should panic");
+                }
+            };
+            Ok(())
+        },
+        nodes: vec![Default::default(), Default::default()],
+    };
+    testnet(config).unwrap();
 }
 
 struct UserConfig {
