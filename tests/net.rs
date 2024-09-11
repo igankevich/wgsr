@@ -31,7 +31,7 @@ fn run_testnet() {
     let random_bytes: Vec<u8> = generate_random_bytes();
     std::fs::write(workdir.path().join("random-file"), random_bytes).unwrap();
     let config = NetConfig {
-        callback: |context| match context.current_node_name() {
+        main: |context| match context.current_node_name() {
             "relay" => relay_main(context),
             "hub" => hub_main(context, workdir.path()),
             "spoke" => spoke_main(context, workdir.path()),

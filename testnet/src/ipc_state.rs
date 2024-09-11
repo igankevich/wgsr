@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use std::fmt::Debug;
-use std::fmt::Display;
-use std::fmt::Formatter;
 
 use mio::Poll;
 use mio::Token;
 
+use crate::format_error;
 use crate::BroadcastPayload;
 use crate::IpcClient;
 use crate::IpcMessage;
@@ -33,14 +31,14 @@ impl IpcStateMachine {
         clients: &mut [IpcClient],
         writer_token: Token,
         poll: &mut Poll,
-    ) -> Result<(), IpcStateMachineError> {
+    ) -> Result<(), std::io::Error> {
         match message {
             IpcMessage::Send(payload) => {
                 if let Some(i) = self.broadcast_initiator {
-                    return Err(IpcStateMachineError(format!(
+                    return Err(format_error!(
                         "another broadcast from node `{}` is in progress",
                         i
-                    )));
+                    ));
                 }
                 self.insert_broadcast(from_node_index, Broadcast::Send(payload))?;
                 self.broadcast_initiator = Some(from_node_index);
@@ -58,19 +56,15 @@ impl IpcStateMachine {
         Ok(())
     }
 
-    fn insert_broadcast(
-        &mut self,
-        i: usize,
-        broadcast: Broadcast,
-    ) -> Result<(), IpcStateMachineError> {
+    fn insert_broadcast(&mut self, i: usize, broadcast: Broadcast) -> Result<(), std::io::Error> {
         use std::collections::hash_map::Entry;
         match self.broadcasts.entry(i) {
             Entry::Vacant(v) => {
                 v.insert(broadcast);
                 Ok(())
             }
-            Entry::Occupied(_) => Err(IpcStateMachineError(
-                "only one message per broadcast is permitted".into(),
+            Entry::Occupied(_) => Err(std::io::Error::other(
+                "only one message per broadcast is permitted",
             )),
         }
     }
@@ -80,23 +74,19 @@ impl IpcStateMachine {
         clients: &mut [IpcClient],
         writer_token: Token,
         poll: &mut Poll,
-    ) -> Result<(), IpcStateMachineError> {
+    ) -> Result<(), std::io::Error> {
         let initiator = match self.broadcast_initiator {
             Some(initiator) => initiator,
-            None => {
-                return Err(IpcStateMachineError(
-                    "broadcast initiator is missing".into(),
-                ))
-            }
+            None => return Err(std::io::Error::other("broadcast initiator is missing")),
         };
         // replace Broadcast::Payload with Broadcast::Wait
         let payload = self
             .broadcasts
             .insert(initiator, Broadcast::Wait)
-            .ok_or_else(|| IpcStateMachineError("broadcast payload is missing".into()))?;
+            .ok_or_else(|| std::io::Error::other("broadcast payload is missing"))?;
         let payload = match payload {
             Broadcast::Send(data) => data,
-            _ => return Err(IpcStateMachineError("initiator sent wrong message".into())),
+            _ => return Err(std::io::Error::other("initiator sent wrong message")),
         };
         for (i, broadcast) in self.broadcasts.drain() {
             let message = match broadcast {
@@ -104,12 +94,8 @@ impl IpcStateMachine {
                 Broadcast::Wait => IpcMessage::Wait,
                 _ => continue,
             };
-            clients[i]
-                .send(&message)
-                .map_err(|e| IpcStateMachineError(e.to_string()))?;
-            clients[i]
-                .send_finalize(writer_token, poll)
-                .map_err(|e| IpcStateMachineError(e.to_string()))?;
+            clients[i].send(&message)?;
+            clients[i].send_finalize(writer_token, poll)?;
         }
         self.broadcasts.clear();
         self.broadcast_initiator = None;
@@ -123,19 +109,3 @@ enum Broadcast {
     Receive,
     Wait,
 }
-
-pub(crate) struct IpcStateMachineError(pub(crate) String);
-
-impl Display for IpcStateMachineError {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Debug for IpcStateMachineError {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for IpcStateMachineError {}

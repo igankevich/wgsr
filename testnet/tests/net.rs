@@ -17,7 +17,7 @@ fn net2() {
         },
     ];
     let config = NetConfig {
-        callback: |context| {
+        main: |context| {
             let i = context.current_node_index();
             let node = context.current_node();
             eprintln!(
@@ -42,7 +42,7 @@ fn net2() {
 #[test]
 fn ipc() {
     let config = NetConfig {
-        callback: |mut context| {
+        main: |mut context| {
             let i = context.current_node_index();
             match i {
                 0 => {
@@ -69,7 +69,7 @@ fn ipc() {
 #[should_panic]
 fn failure() {
     let config = NetConfig {
-        callback: |context| {
+        main: |context| {
             let i = context.current_node_index();
             match i {
                 0 => {

@@ -1,7 +1,5 @@
-use nix::unistd::dup2;
 use std::ffi::c_int;
 use std::ffi::CString;
-use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -10,56 +8,46 @@ use std::os::fd::RawFd;
 
 use ipnet::IpNet;
 use mio_pidfd::PidFd;
-use netlink_packet_core::NetlinkDeserializable;
-use netlink_packet_core::NetlinkMessage;
-use netlink_packet_core::NetlinkPayload;
-use netlink_packet_core::NetlinkSerializable;
-use netlink_packet_core::NLM_F_ACK;
-use netlink_packet_core::NLM_F_CREATE;
-use netlink_packet_core::NLM_F_EXCL;
-use netlink_packet_core::NLM_F_REQUEST;
-use netlink_packet_route::address::AddressAttribute;
-use netlink_packet_route::address::AddressMessage;
-use netlink_packet_route::link::InfoData;
-use netlink_packet_route::link::InfoKind;
-use netlink_packet_route::link::InfoVeth;
-use netlink_packet_route::link::LinkAttribute;
-use netlink_packet_route::link::LinkFlags;
-use netlink_packet_route::link::LinkInfo;
-use netlink_packet_route::link::LinkMessage;
-use netlink_packet_route::RouteNetlinkMessage;
 use nix::sched::CloneFlags;
 use nix::sys::prctl::set_name;
-use nix::sys::socket::socket;
-use nix::sys::socket::AddressFamily;
-use nix::sys::socket::SockFlag;
 use nix::sys::socket::SockProtocol;
-use nix::sys::socket::SockType;
 use nix::sys::wait::WaitStatus;
+use nix::unistd::dup2;
 use nix::unistd::pipe;
 use nix::unistd::sethostname;
 use nix::unistd::Gid;
-use nix::unistd::Pid;
 use nix::unistd::Uid;
 
+use crate::log_format;
+use crate::pipe_channel;
 use crate::CallbackResult;
 use crate::Context;
 use crate::IpcClient;
 use crate::IpcServer;
 use crate::NetConfig;
+use crate::Netlink;
 use crate::NodeConfig;
+use crate::PipeReceiver;
 use crate::Process;
 
+/// Virtual network.
+///
+/// This struct offers more granular control over the network compared to `testnet` function.
+/// See `testnet` for more details.
 pub struct Network {
     main: Process,
 }
 
 impl Network {
+    /// Create new virtual network with the specified configuration.
+    ///
+    /// Launches child processes in their own network namespaces.
+    /// See `testnet` for more details.
     pub fn new<F: FnOnce(Context) -> CallbackResult + Clone>(
         config: NetConfig<F>,
     ) -> Result<Self, std::io::Error> {
         let (sender, receiver) = pipe_channel()?;
-        let receiver_fd_in = receiver.fd_in;
+        let receiver_fd_in = receiver.raw_fd_in;
         let main = Process::spawn(
             || network_switch_main(receiver.into(), config),
             STACK_SIZE,
@@ -83,11 +71,23 @@ impl Network {
         Ok(Self { main })
     }
 
+    /// Wait until the child processes exit successfully or one of the node processes fails.
     pub fn wait(&self) -> Result<WaitStatus, std::io::Error> {
         Ok(self.main.wait()?)
     }
 }
 
+/// Main entry point to the library.
+///
+/// Launches virtual network using Linux network namespaces
+/// and runs specified `main` function in each node's process.
+/// If a node process exits with non-zero value, the test fails.
+/// If all node processes exit with zero values, the test succeeds.
+///
+/// This function internally launches child process in its own network namespace,
+/// and this process in turn launches another child process for each network node
+/// (again in its own network namespace).
+/// Nodes do not have access to the outside network.
 pub fn testnet<F: FnOnce(Context) -> CallbackResult + Clone>(
     config: NetConfig<F>,
 ) -> Result<(), std::io::Error> {
@@ -105,7 +105,7 @@ fn network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
     match do_network_switch_main(receiver, config) {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("network main failed: {}", e);
+            log_format!("network main failed: {}", e);
             1
         }
     }
@@ -115,13 +115,13 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
     receiver: PipeReceiver,
     config: NetConfig<F>,
 ) -> CallbackResult {
-    set_process_name("switch")?;
-    sethostname("switch")?;
+    set_process_name(SWITCH_NAME)?;
+    sethostname(SWITCH_NAME)?;
     // wait for uid/gid mappings to be done by the parent process
     receiver.wait_until_closed()?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
-    netlink.new_bridge("testnet")?;
-    let bridge_index = netlink.index("testnet")?;
+    netlink.new_bridge(BRIDGE_IFNAME)?;
+    let bridge_index = netlink.index(BRIDGE_IFNAME)?;
     let mut nodes: Vec<Process> = Vec::with_capacity(config.nodes.len());
     let net = IpNet::new(Ipv4Addr::new(10, 84, 0, 0).into(), 16)?;
     let mut all_node_configs = Vec::with_capacity(config.nodes.len());
@@ -147,7 +147,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         netlink.set_up(outer.clone())?;
         netlink.set_bridge(outer, bridge_index)?;
         let (sender, receiver) = pipe_channel()?;
-        let receiver_fd_in = receiver.fd_in;
+        let receiver_fd_in = receiver.raw_fd_in;
         let (in_self, out_other) = pipe()?;
         let (in_other, out_self) = pipe()?;
         let (output_self, output_other) = pipe()?;
@@ -157,7 +157,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         let out_other_fd = out_other.as_raw_fd();
         let output_other_fd = output_other.as_raw_fd();
         let output_self_fd = output_self.as_raw_fd();
-        let callback = config.callback.clone();
+        let main = config.main.clone();
         let node_name = all_node_configs[i].name.clone();
         let all_node_configs = all_node_configs.clone();
         let process = Process::spawn(
@@ -174,7 +174,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
                     out_other_fd,
                     output_other_fd,
                     i,
-                    callback,
+                    main,
                     all_node_configs,
                 )
             },
@@ -224,7 +224,7 @@ fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
     ipc_out_fd: RawFd,
     output_fd: RawFd,
     i: usize,
-    callback: F,
+    main: F,
     node_config: Vec<NodeConfig>,
 ) -> c_int {
     match do_network_node_main(
@@ -233,12 +233,12 @@ fn network_node_main<F: FnOnce(Context) -> CallbackResult>(
         ipc_out_fd,
         output_fd,
         i,
-        callback,
+        main,
         node_config,
     ) {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("child main failed: {}", e);
+            log_format!("child `main` failed: {}", e);
             1
         }
     }
@@ -250,7 +250,7 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     ipc_out_fd: RawFd,
     output_fd: RawFd,
     i: usize,
-    callback: F,
+    main: F,
     nodes: Vec<NodeConfig>,
 ) -> CallbackResult {
     // redirect stdout/stderr
@@ -263,7 +263,7 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     // wait for veth to be trasnferred to this process' network namespace
     receiver.wait_until_closed()?;
     let mut netlink = Netlink::new(SockProtocol::NetlinkRoute)?;
-    netlink.set_up("lo")?;
+    netlink.set_up(LOOPBACK_IFNAME)?;
     let inner_index = netlink.index(INNER_IFNAME)?;
     netlink.set_up(INNER_IFNAME)?;
     netlink.set_ifaddr(inner_index, nodes[i].ifaddr)?;
@@ -276,260 +276,7 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
         step_name: None,
         step: 0,
     };
-    callback(context).map_err(|e| format!("error in node main: {}", e).into())
-}
-
-struct Netlink {
-    socket: OwnedFd,
-}
-
-impl Netlink {
-    pub fn new(protocol: SockProtocol) -> Result<Self, std::io::Error> {
-        let socket = socket(
-            AddressFamily::Netlink,
-            SockType::Raw,
-            SockFlag::SOCK_CLOEXEC,
-            protocol,
-        )?;
-        Ok(Self { socket })
-    }
-
-    pub fn new_veth_pair(
-        &mut self,
-        name: impl ToString,
-        peer_name: impl ToString,
-    ) -> Result<(), std::io::Error> {
-        let mut peer = LinkMessage::default();
-        peer.attributes
-            .push(LinkAttribute::IfName(name.to_string()));
-        let link_info_data = InfoData::Veth(InfoVeth::Peer(peer));
-        let mut link = LinkMessage::default();
-        link.attributes
-            .push(LinkAttribute::IfName(peer_name.to_string()));
-        link.attributes.push(LinkAttribute::LinkInfo(vec![
-            LinkInfo::Kind(InfoKind::Veth),
-            LinkInfo::Data(link_info_data),
-        ]));
-        link.header.flags.insert(LinkFlags::Up);
-        link.header.change_mask.insert(LinkFlags::Up);
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::NewLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn new_bridge(&mut self, name: impl ToString) -> Result<(), std::io::Error> {
-        let mut link = LinkMessage::default();
-        link.attributes
-            .push(LinkAttribute::IfName(name.to_string()));
-        link.attributes
-            .push(LinkAttribute::LinkInfo(vec![LinkInfo::Kind(
-                InfoKind::Bridge,
-            )]));
-        link.header.flags.insert(LinkFlags::Up);
-        link.header.change_mask.insert(LinkFlags::Up);
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::NewLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn set_up(&mut self, name: impl ToString) -> Result<(), std::io::Error> {
-        let mut link = LinkMessage::default();
-        link.attributes
-            .push(LinkAttribute::IfName(name.to_string()));
-        link.header.flags.insert(LinkFlags::Up);
-        link.header.change_mask.insert(LinkFlags::Up);
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::SetLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn set_bridge(&mut self, name: String, bridge_index: u32) -> Result<(), std::io::Error> {
-        let mut link = LinkMessage::default();
-        link.attributes.push(LinkAttribute::IfName(name));
-        link.attributes
-            .push(LinkAttribute::Controller(bridge_index));
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::SetLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn set_network_namespace(
-        &mut self,
-        name: impl ToString,
-        pid: Pid,
-    ) -> Result<(), std::io::Error> {
-        let mut link = LinkMessage::default();
-        link.attributes
-            .push(LinkAttribute::IfName(name.to_string()));
-        link.attributes
-            .push(LinkAttribute::NetNsPid(pid.as_raw() as u32));
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::SetLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn set_ifaddr(&mut self, index: u32, ifaddr: IpNet) -> Result<(), std::io::Error> {
-        use netlink_packet_route::AddressFamily;
-        let mut message = AddressMessage::default();
-        message.header.prefix_len = ifaddr.prefix_len();
-        message.header.index = index;
-        message.header.family = match ifaddr {
-            IpNet::V4(_) => AddressFamily::Inet,
-            IpNet::V6(_) => AddressFamily::Inet6,
-        };
-        message
-            .attributes
-            .push(AddressAttribute::Address(ifaddr.addr()));
-        message
-            .attributes
-            .push(AddressAttribute::Local(ifaddr.addr()));
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::NewAddress(message));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
-        message.finalize();
-        let message = self.send(&message)?;
-        check_ok(message)?;
-        Ok(())
-    }
-
-    pub fn index(&mut self, name: impl ToString) -> Result<u32, std::io::Error> {
-        let mut link = LinkMessage::default();
-        link.attributes
-            .push(LinkAttribute::IfName(name.to_string()));
-        let mut message = NetlinkMessage::from(RouteNetlinkMessage::GetLink(link));
-        message.header.flags = NLM_F_REQUEST | NLM_F_ACK;
-        message.finalize();
-        let message = self.send(&message)?;
-        let index = match message.payload {
-            NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(ref inner)) => {
-                Some(inner.header.index)
-            }
-            _ => None,
-        };
-        match index {
-            Some(index) => Ok(index),
-            None => Err(std::io::Error::other(format!(
-                "netlink returned unexpected data: {:?}",
-                message,
-            ))),
-        }
-    }
-
-    fn send<I: NetlinkSerializable + NetlinkDeserializable + Debug>(
-        &mut self,
-        message: &NetlinkMessage<I>,
-    ) -> Result<NetlinkMessage<I>, std::io::Error> {
-        let mut buf = vec![0_u8; message.header.length as usize];
-        // Serialize the packet
-        message.serialize(&mut buf[..]);
-        let n = nix::unistd::write(&mut self.socket, &buf)?;
-        if n != buf.len() {
-            return Err(std::io::Error::other("partial write"));
-        }
-        buf.clear();
-        buf.resize(4096, 0_u8);
-        let n = nix::unistd::read(self.socket.as_raw_fd(), &mut buf)?;
-        buf.truncate(n);
-        let message = NetlinkMessage::<I>::deserialize(&buf)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(message)
-    }
-}
-
-fn check_ok<I: Debug>(message: NetlinkMessage<I>) -> Result<NetlinkMessage<I>, std::io::Error> {
-    match message.payload {
-        NetlinkPayload::Error(ref error) => {
-            if let Some(code) = error.code {
-                return Err(std::io::Error::other(format!(
-                    "netlink failed with error code {}",
-                    code
-                )));
-            }
-        }
-        other => {
-            return Err(std::io::Error::other(format!(
-                "netlink returned unexpected data: {:?}",
-                other,
-            )));
-        }
-    }
-    Ok(message)
-}
-
-fn pipe_channel() -> Result<(PipeSender, RawPipeReceiver), std::io::Error> {
-    let (pipe_in, pipe_out) = pipe()?;
-    let receiver = RawPipeReceiver::new(pipe_in.as_raw_fd(), pipe_out.as_raw_fd());
-    let sender = PipeSender::new(pipe_in, pipe_out);
-    Ok((sender, receiver))
-}
-
-struct RawPipeReceiver {
-    fd_in: RawFd,
-    fd_out: RawFd,
-}
-
-impl RawPipeReceiver {
-    fn new(fd_in: RawFd, fd_out: RawFd) -> Self {
-        Self { fd_in, fd_out }
-    }
-}
-
-struct PipeReceiver {
-    fd: OwnedFd,
-}
-
-impl PipeReceiver {
-    fn new(fd_in: RawFd, fd_out: RawFd) -> Self {
-        // drop sender
-        unsafe { OwnedFd::from_raw_fd(fd_out) };
-        Self {
-            fd: unsafe { OwnedFd::from_raw_fd(fd_in) },
-        }
-    }
-
-    fn wait_until_closed(&self) -> Result<(), std::io::Error> {
-        let mut buf = [0_u8; 1];
-        nix::unistd::read(self.fd.as_raw_fd(), &mut buf)?;
-        Ok(())
-    }
-}
-
-impl From<RawPipeReceiver> for PipeReceiver {
-    fn from(other: RawPipeReceiver) -> Self {
-        Self::new(other.fd_in, other.fd_out)
-    }
-}
-
-struct PipeSender {
-    #[allow(dead_code)]
-    fd_in: OwnedFd,
-    #[allow(dead_code)]
-    fd_out: OwnedFd,
-}
-
-impl PipeSender {
-    fn new(fd_in: OwnedFd, fd_out: OwnedFd) -> Self {
-        // drop receiver
-        Self { fd_in, fd_out }
-    }
-
-    fn close(self) {
-        // drop self
-    }
+    main(context).map_err(|e| format!("node `main` failed: {}", e).into())
 }
 
 fn wait_status_ok(status: &WaitStatus) -> bool {
@@ -556,3 +303,6 @@ fn set_process_name(name: &str) -> Result<(), std::io::Error> {
 
 const STACK_SIZE: usize = 4096 * 16;
 const INNER_IFNAME: &str = "veth";
+const BRIDGE_IFNAME: &str = "testnet";
+const SWITCH_NAME: &str = "switch";
+const LOOPBACK_IFNAME: &str = "lo";

@@ -1,14 +1,12 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::io::BufWriter;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::BorrowedFd;
 use std::os::fd::OwnedFd;
 
-use bincode::error::DecodeError;
 use log::error;
 use mio::event::Event;
 use mio::unix::SourceFd;
@@ -26,8 +24,8 @@ use nix::sys::wait::waitid;
 use nix::sys::wait::WaitPidFlag;
 use nix::sys::wait::WaitStatus;
 
-use crate::IpcEncodeDecode;
-use crate::IpcMessage;
+use crate::format_error;
+use crate::IpcClient;
 use crate::IpcStateMachine;
 
 pub(crate) struct IpcServer {
@@ -36,7 +34,7 @@ pub(crate) struct IpcServer {
     pid_fds: Vec<PidFd>,
     output_readers: Vec<OutputReader>,
     state: IpcStateMachine,
-    finished: HashMap<usize, bool>,
+    finished: HashSet<usize>,
 }
 
 impl IpcServer {
@@ -105,18 +103,18 @@ impl IpcServer {
                             FdKind::Pid => {
                                 self.handle_finished(event, i);
                                 if self.process_failed(i)? {
-                                    return Err(std::io::Error::other(format!("node {i} failed")));
+                                    return Err(format_error!("node {i} failed"));
                                 }
                                 Ok(())
                             }
-                            FdKind::Output => {
+                            FdKind::ProcessOutput => {
                                 self.handle_finished(event, i);
                                 self.on_process_output(event, i)?;
                                 Ok(())
                             }
                         }
                     }
-                    Token(i) => Err(std::io::Error::other(format!("unknown event {}", i))),
+                    Token(i) => Err(format_error!("unknown event {i}")),
                 };
                 if let Err(e) = ret {
                     error!("ipc server error: {}", e);
@@ -127,11 +125,8 @@ impl IpcServer {
     }
 
     fn handle_finished(&mut self, event: &Event, i: usize) {
-        if event.is_error() {
-            self.finished.insert(i, false);
-        }
-        if event.is_read_closed() || event.is_write_closed() {
-            self.finished.insert(i, true);
+        if event.is_error() || event.is_read_closed() || event.is_write_closed() {
+            self.finished.insert(i);
         }
     }
 
@@ -161,10 +156,10 @@ impl IpcServer {
             Some(Interest::READABLE) => self
                 .poll
                 .registry()
-                .deregister(&mut SourceFd(&client.writer.get_ref().as_raw_fd()))?,
+                .deregister(&mut SourceFd(&client.output_raw_fd()))?,
             Some(Interest::WRITABLE) => {
                 self.poll.registry().reregister(
-                    &mut SourceFd(&client.writer.get_ref().as_raw_fd()),
+                    &mut SourceFd(&client.output_raw_fd()),
                     writer_token,
                     Interest::WRITABLE,
                 )?;
@@ -191,7 +186,7 @@ impl IpcServer {
             None => true,
         };
         if finished {
-            self.finished.insert(i, true);
+            self.finished.insert(i);
         }
         match status {
             Some(status) => Ok(status_is_failure(status)),
@@ -206,60 +201,6 @@ impl IpcServer {
         if event.is_error() || event.is_read_closed() || event.is_write_closed() {
             self.output_readers[i].print_lines()?;
             self.output_readers[i].print_remaining()?;
-        }
-        Ok(())
-    }
-}
-
-pub(crate) struct IpcClient {
-    reader: BufReader<File>,
-    writer: BufWriter<File>,
-}
-
-impl IpcClient {
-    pub(crate) fn new(in_fd: OwnedFd, out_fd: OwnedFd) -> Self {
-        Self {
-            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
-            writer: BufWriter::with_capacity(MAX_MESSAGE_SIZE, out_fd.into()),
-        }
-    }
-
-    pub(crate) fn fill_buf(&mut self) -> Result<(), std::io::Error> {
-        self.reader.fill_buf()?;
-        Ok(())
-    }
-
-    pub(crate) fn flush(&mut self) -> Result<bool, std::io::Error> {
-        self.writer.flush()?;
-        Ok(self.writer.buffer().is_empty())
-    }
-
-    pub(crate) fn recv(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
-        match IpcMessage::decode(&mut self.reader) {
-            Ok(message) => Ok(Some(message)),
-            Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),
-            Err(e) => Err(std::io::Error::other(e)),
-        }
-    }
-
-    pub(crate) fn send(&mut self, message: &IpcMessage) -> Result<(), std::io::Error> {
-        message
-            .encode(&mut self.writer)
-            .map_err(std::io::Error::other)?;
-        Ok(())
-    }
-
-    pub(crate) fn send_finalize(
-        &mut self,
-        writer_token: Token,
-        poll: &mut Poll,
-    ) -> Result<(), std::io::Error> {
-        if !self.flush()? {
-            poll.registry().reregister(
-                &mut SourceFd(&self.writer.get_ref().as_raw_fd()),
-                writer_token,
-                Interest::WRITABLE,
-            )?;
         }
         Ok(())
     }
@@ -354,7 +295,7 @@ enum FdKind {
     In,
     Out,
     Pid,
-    Output,
+    ProcessOutput,
 }
 
 impl FdKind {
@@ -363,7 +304,7 @@ impl FdKind {
             0 => Self::In,
             1 => Self::Out,
             2 => Self::Pid,
-            _ => Self::Output,
+            _ => Self::ProcessOutput,
         }
     }
 }
@@ -378,5 +319,4 @@ fn status_is_failure(status: WaitStatus) -> bool {
 
 const WAKE_TOKEN: Token = Token(usize::MAX);
 const NUM_FDS: usize = 4;
-pub(crate) const MAX_MESSAGE_SIZE: usize = 4096 * 16;
 pub(crate) const OUTPUT_BUFFER_SIZE: usize = 4096 * 16;

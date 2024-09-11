@@ -4,6 +4,7 @@ use std::process::Command;
 use std::process::ExitCode;
 
 use clap::Parser;
+use testnet::log_format;
 use testnet::NetConfig;
 use testnet::Network;
 
@@ -30,7 +31,7 @@ fn main() -> ExitCode {
     match do_main() {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{e}");
+            log_format!("{e}");
             ExitCode::FAILURE
         }
     }
@@ -45,7 +46,7 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO write each node's env variables to a separate file
     // TODO netlink is slow (non-blocking?)
     let config = NetConfig {
-        callback: |context| {
+        main: |context| {
             let node = context.current_node();
             Err(Command::new(&args.program)
                 .args(&args.args)

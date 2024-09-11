@@ -20,7 +20,7 @@ use nix::sys::wait::WaitStatus;
 use nix::unistd::setpgid;
 use nix::unistd::Pid;
 
-pub struct Process {
+pub(crate) struct Process {
     id: Pid,
     #[allow(dead_code)]
     stack: Vec<u8>,
@@ -28,7 +28,7 @@ pub struct Process {
 
 impl Process {
     #[allow(clippy::uninit_vec)]
-    pub fn spawn<F: FnOnce() -> c_int>(
+    pub(crate) fn spawn<F: FnOnce() -> c_int>(
         child_main: F,
         stack_size: usize,
         flags: CloneFlags,
@@ -55,19 +55,19 @@ impl Process {
         Ok(Self { id, stack })
     }
 
-    pub fn kill(&self, signal: Signal) -> Result<(), Errno> {
+    pub(crate) fn kill(&self, signal: Signal) -> Result<(), Errno> {
         killpg(self.id, signal)
     }
 
-    pub fn wait(&self) -> Result<WaitStatus, Errno> {
+    pub(crate) fn wait(&self) -> Result<WaitStatus, Errno> {
         waitpid(self.id, None)
     }
 
-    pub fn id(&self) -> Pid {
+    pub(crate) fn id(&self) -> Pid {
         self.id
     }
 
-    pub fn fd(&self) -> Result<PidFd, std::io::Error> {
+    pub(crate) fn fd(&self) -> Result<PidFd, std::io::Error> {
         PidFd::open(self.id.as_raw(), 0)
     }
 }
