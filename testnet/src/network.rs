@@ -139,7 +139,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         }
         all_node_configs.push(node_config);
     }
-    let mut ipc_fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd)> =
+    let mut ipc_fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd, String)> =
         Vec::with_capacity(all_node_configs.len());
     for i in 0..all_node_configs.len() {
         let outer = outer_ifname(i);
@@ -158,6 +158,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         let output_other_fd = output_other.as_raw_fd();
         let output_self_fd = output_self.as_raw_fd();
         let callback = config.callback.clone();
+        let node_name = all_node_configs[i].name.clone();
         let all_node_configs = all_node_configs.clone();
         let process = Process::spawn(
             || {
@@ -189,7 +190,7 @@ fn do_network_switch_main<F: FnOnce(Context) -> CallbackResult + Clone>(
         drop(out_other);
         drop(output_other);
         let pid_fd = process.fd()?;
-        ipc_fds.push((in_self, out_self, pid_fd, output_self));
+        ipc_fds.push((in_self, out_self, pid_fd, output_self, node_name));
         nodes.push(process);
     }
     let mut ipc_server = IpcServer::new(ipc_fds)?;

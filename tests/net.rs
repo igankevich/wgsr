@@ -15,6 +15,7 @@ use test_bin::get_test_bin;
 use testnet::testnet;
 use testnet::Context;
 use testnet::NetConfig;
+use testnet::NodeConfig;
 
 use crate::logger::Logger;
 use crate::wgxd::Wgxd;
@@ -30,16 +31,26 @@ fn run_testnet() {
     let random_bytes: Vec<u8> = generate_random_bytes();
     std::fs::write(workdir.path().join("random-file"), random_bytes).unwrap();
     let config = NetConfig {
-        callback: |context| {
-            let i = context.current_node_index();
-            match i {
-                RELAY_NODE_INDEX => relay_main(context),
-                HUB_NODE_INDEX => hub_main(context, workdir.path()),
-                SPOKE_NODE_INDEX => spoke_main(context, workdir.path()),
-                _ => Err("invalid node index".into()),
-            }
+        callback: |context| match context.current_node_name() {
+            "relay" => relay_main(context),
+            "hub" => hub_main(context, workdir.path()),
+            "spoke" => spoke_main(context, workdir.path()),
+            name => Err(format!("invalid node name: {name}").into()),
         },
-        nodes: vec![Default::default(); 3],
+        nodes: vec![
+            NodeConfig {
+                name: "relay".into(),
+                ..Default::default()
+            },
+            NodeConfig {
+                name: "hub".into(),
+                ..Default::default()
+            },
+            NodeConfig {
+                name: "spoke".into(),
+                ..Default::default()
+            },
+        ],
     };
     testnet(config).unwrap();
 }
@@ -210,7 +221,3 @@ fn wait_until_started(name: &str, command: &mut Command) -> Result<(), std::io::
         "{name} has not stared in {NUM_SECONDS}s"
     )))
 }
-
-const RELAY_NODE_INDEX: usize = 0;
-const HUB_NODE_INDEX: usize = 1;
-const SPOKE_NODE_INDEX: usize = 2;

@@ -41,13 +41,13 @@ pub(crate) struct IpcServer {
 
 impl IpcServer {
     pub(crate) fn new(
-        fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd)>,
+        fds: Vec<(OwnedFd, OwnedFd, PidFd, OwnedFd, String)>,
     ) -> Result<Self, std::io::Error> {
         let poll = Poll::new()?;
         let mut clients = Vec::with_capacity(fds.len());
         let mut pid_fds = Vec::with_capacity(fds.len());
         let mut output_readers = Vec::with_capacity(fds.len());
-        for (i, (in_fd, out_fd, pid_fd, output_fd)) in fds.into_iter().enumerate() {
+        for (i, (in_fd, out_fd, pid_fd, output_fd, node_name)) in fds.into_iter().enumerate() {
             fcntl(in_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             fcntl(out_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
             fcntl(output_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
@@ -68,7 +68,7 @@ impl IpcServer {
             )?;
             clients.push(IpcClient::new(in_fd, out_fd));
             pid_fds.push(pid_fd);
-            output_readers.push(OutputReader::new(output_fd));
+            output_readers.push(OutputReader::new(output_fd, node_name));
         }
         let num_nodes = clients.len();
         Ok(Self {
@@ -201,11 +201,11 @@ impl IpcServer {
 
     fn on_process_output(&mut self, event: &Event, i: usize) -> Result<(), std::io::Error> {
         if event.is_readable() {
-            self.output_readers[i].print_lines(i)?;
+            self.output_readers[i].print_lines()?;
         }
         if event.is_error() || event.is_read_closed() || event.is_write_closed() {
-            self.output_readers[i].print_lines(i)?;
-            self.output_readers[i].print_remaining(i)?;
+            self.output_readers[i].print_lines()?;
+            self.output_readers[i].print_remaining()?;
         }
         Ok(())
     }
@@ -271,32 +271,32 @@ struct OutputReader {
 }
 
 impl OutputReader {
-    pub(crate) fn new(in_fd: OwnedFd) -> Self {
+    pub(crate) fn new(in_fd: OwnedFd, name: String) -> Self {
         Self {
             reader: BufReader::with_capacity(OUTPUT_BUFFER_SIZE, in_fd.into()),
-            line: LineBuffer::new(),
+            line: LineBuffer::new(format!("{name}: ")),
         }
     }
 
-    pub(crate) fn print_lines(&mut self, node: usize) -> Result<(), std::io::Error> {
+    pub(crate) fn print_lines(&mut self) -> Result<(), std::io::Error> {
         let mut buf = self.reader.fill_buf()?;
         let buf_len = buf.len();
         while let Some(mut i) = buf.iter().position(|ch| *ch == b'\n') {
             i += 1;
-            self.line.append(&buf[..i], node);
+            self.line.append(&buf[..i]);
             self.line.print()?;
             buf = &buf[i..];
         }
         if !buf.is_empty() {
-            self.line.append(buf, node);
+            self.line.append(buf);
         }
         self.reader.consume(buf_len);
         Ok(())
     }
 
-    pub(crate) fn print_remaining(&mut self, i: usize) -> Result<(), std::io::Error> {
+    pub(crate) fn print_remaining(&mut self) -> Result<(), std::io::Error> {
         if !self.line.is_empty() {
-            self.line.append("⏎\n".as_bytes(), i);
+            self.line.append("⏎\n".as_bytes());
             self.line.print()?;
         }
         Ok(())
@@ -305,20 +305,24 @@ impl OutputReader {
 
 struct LineBuffer {
     line: Vec<u8>,
+    prefix: String,
 }
 
 impl LineBuffer {
-    fn new() -> Self {
-        Self { line: Vec::new() }
+    fn new(prefix: String) -> Self {
+        Self {
+            line: Vec::new(),
+            prefix,
+        }
     }
 
     fn is_empty(&self) -> bool {
         self.line.is_empty()
     }
 
-    fn append(&mut self, buf: &[u8], i: usize) {
+    fn append(&mut self, buf: &[u8]) {
         if self.line.is_empty() {
-            self.line.extend_from_slice(format!("n{}: ", i).as_bytes());
+            self.line.extend_from_slice(self.prefix.as_bytes());
         }
         self.line.extend_from_slice(buf);
     }

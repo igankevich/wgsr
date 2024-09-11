@@ -35,6 +35,10 @@ impl Context {
         self.node_index
     }
 
+    pub fn current_node_name(&self) -> &str {
+        self.nodes[self.node_index].name.as_str()
+    }
+
     pub fn current_node(&self) -> &NodeConfig {
         &self.nodes[self.node_index]
     }
