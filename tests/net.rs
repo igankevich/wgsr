@@ -69,7 +69,7 @@ fn relay_main(mut context: Context) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn hub_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let relay_socket_addr: SocketAddr = context.receive_text()?.parse()?;
+    let relay_socket_addr: SocketAddr = context.recv_text()?.parse()?;
     context.step("start hub");
     let config_file = workdir.join("hub.conf");
     assert!(get_test_bin("wgx")
@@ -146,7 +146,7 @@ fn hub_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::err
 }
 
 fn spoke_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let relay_socket_addr: SocketAddr = context.receive_text()?.parse()?;
+    let relay_socket_addr: SocketAddr = context.recv_text()?.parse()?;
     context.wait()?;
     context.step("start spoke");
     let config_file = workdir.join("spoke.conf");

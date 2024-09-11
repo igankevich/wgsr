@@ -144,7 +144,7 @@ impl IpcServer {
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
             self.clients[i].fill_buf()?;
-            while let Some(message) = self.clients[i].receive()? {
+            while let Some(message) = self.clients[i].recv()? {
                 self.state
                     .on_message(message, i, &mut self.clients, writer_token, &mut self.poll)
                     .map_err(std::io::Error::other)?;
@@ -234,7 +234,7 @@ impl IpcClient {
         Ok(self.writer.buffer().is_empty())
     }
 
-    pub(crate) fn receive(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
+    pub(crate) fn recv(&mut self) -> Result<Option<IpcMessage>, std::io::Error> {
         match IpcMessage::decode(&mut self.reader) {
             Ok(message) => Ok(Some(message)),
             Err(DecodeError::UnexpectedEnd { .. }) => Ok(None),

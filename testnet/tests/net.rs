@@ -52,7 +52,7 @@ fn ipc() {
                 }
                 _ => {
                     eprintln!("node {i} receive start");
-                    let data = context.receive()?;
+                    let data = context.recv()?;
                     eprintln!("node {i} receive end");
                     let string = String::from_utf8(data).unwrap();
                     assert_eq!("ping", string);

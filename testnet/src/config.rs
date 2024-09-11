@@ -62,7 +62,7 @@ impl Context {
         self.ipc_client.fill_buf()?;
         let response = self
             .ipc_client
-            .receive()?
+            .recv()?
             .ok_or_else(|| std::io::Error::other("no response"))?;
         if !matches!(response, IpcMessage::Wait) {
             return Err(std::io::Error::other("invalid response"));
@@ -75,13 +75,13 @@ impl Context {
         self.send(text.into())
     }
 
-    pub fn receive(&mut self) -> Result<Vec<u8>, std::io::Error> {
+    pub fn recv(&mut self) -> Result<Vec<u8>, std::io::Error> {
         self.ipc_client.send(&IpcMessage::Receive)?;
         self.ipc_client.flush()?;
         self.ipc_client.fill_buf()?;
         let response = self
             .ipc_client
-            .receive()?
+            .recv()?
             .ok_or_else(|| std::io::Error::other("no response"))?;
         match response {
             IpcMessage::Send(data) => Ok(data),
@@ -89,8 +89,8 @@ impl Context {
         }
     }
 
-    pub fn receive_text(&mut self) -> Result<String, std::io::Error> {
-        let data = self.receive()?;
+    pub fn recv_text(&mut self) -> Result<String, std::io::Error> {
+        let data = self.recv()?;
         let text = String::from_utf8(data).map_err(std::io::Error::other)?;
         Ok(text)
     }
@@ -101,7 +101,7 @@ impl Context {
         self.ipc_client.fill_buf()?;
         let response = self
             .ipc_client
-            .receive()?
+            .recv()?
             .ok_or_else(|| std::io::Error::other("no response"))?;
         if !matches!(response, IpcMessage::Wait) {
             return Err(std::io::Error::other("invalid response"));
