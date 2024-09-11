@@ -62,16 +62,14 @@ fn relay_main(mut context: Context) -> Result<(), Box<dyn std::error::Error>> {
     let config = &context.nodes()[i];
     let relay_socket_addr = SocketAddr::new(config.ifaddr.addr(), wgxd.listen_port());
     context.step("start relay");
-    context.send(relay_socket_addr.to_string().into())?;
+    context.send_text(relay_socket_addr.to_string())?;
     context.wait()?;
     context.wait()?;
     Ok(())
 }
 
 fn hub_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let relay_socket_addr = context.receive()?;
-    let relay_socket_addr = String::from_utf8(relay_socket_addr)?;
-    let relay_socket_addr: SocketAddr = relay_socket_addr.parse()?;
+    let relay_socket_addr: SocketAddr = context.receive_text()?.parse()?;
     context.step("start hub");
     let config_file = workdir.join("hub.conf");
     assert!(get_test_bin("wgx")
@@ -142,15 +140,13 @@ fn hub_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::err
             "http://127.0.0.1:8000/random-file",
         ]),
     )?;
-    context.send("hub started".into())?;
+    context.send(Default::default())?;
     context.wait()?;
     Ok(())
 }
 
 fn spoke_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let relay_socket_addr = context.receive()?;
-    let relay_socket_addr = String::from_utf8(relay_socket_addr)?;
-    let relay_socket_addr: SocketAddr = relay_socket_addr.parse()?;
+    let relay_socket_addr: SocketAddr = context.receive_text()?.parse()?;
     context.wait()?;
     context.step("start spoke");
     let config_file = workdir.join("spoke.conf");
@@ -195,7 +191,7 @@ fn spoke_main(mut context: Context, workdir: &Path) -> Result<(), Box<dyn std::e
         std::fs::read(workdir.join("downloaded-random-file")).unwrap(),
         std::fs::read(workdir.join("random-file")).unwrap(),
     );
-    context.send("spoke exited".into())?;
+    context.send(Default::default())?;
     Ok(())
 }
 

@@ -71,6 +71,10 @@ impl Context {
         Ok(())
     }
 
+    pub fn send_text(&mut self, text: String) -> Result<(), std::io::Error> {
+        self.send(text.into())
+    }
+
     pub fn receive(&mut self) -> Result<Vec<u8>, std::io::Error> {
         self.ipc_client.send(&IpcMessage::Receive)?;
         self.ipc_client.flush()?;
@@ -83,6 +87,12 @@ impl Context {
             IpcMessage::Send(data) => Ok(data),
             _ => Err(std::io::Error::other("invalid response")),
         }
+    }
+
+    pub fn receive_text(&mut self) -> Result<String, std::io::Error> {
+        let data = self.receive()?;
+        let text = String::from_utf8(data).map_err(std::io::Error::other)?;
+        Ok(text)
     }
 
     pub fn wait(&mut self) -> Result<(), std::io::Error> {
