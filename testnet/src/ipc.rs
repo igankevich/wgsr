@@ -103,7 +103,7 @@ impl IpcServer {
                         match FdKind::new(token) {
                             FdKind::In | FdKind::Out => self.on_event(event, token, i),
                             FdKind::Pid => {
-                                //self.handle_finished(event, i);
+                                self.handle_finished(event, i);
                                 if self.process_failed(i)? {
                                     return Err(std::io::Error::other(format!("node {i} failed")));
                                 }
@@ -141,7 +141,6 @@ impl IpcServer {
         writer_token: Token,
         i: usize,
     ) -> Result<(), std::io::Error> {
-        //self.handle_finished(event, i);
         let mut interest: Option<Interest> = None;
         if event.is_readable() {
             self.clients[i].fill_buf()?;
@@ -268,42 +267,65 @@ impl IpcClient {
 
 struct OutputReader {
     reader: BufReader<File>,
+    line: LineBuffer,
 }
 
 impl OutputReader {
     pub(crate) fn new(in_fd: OwnedFd) -> Self {
         Self {
-            reader: BufReader::with_capacity(MAX_MESSAGE_SIZE, in_fd.into()),
+            reader: BufReader::with_capacity(OUTPUT_BUFFER_SIZE, in_fd.into()),
+            line: LineBuffer::new(),
         }
     }
 
     pub(crate) fn print_lines(&mut self, node: usize) -> Result<(), std::io::Error> {
         let mut buf = self.reader.fill_buf()?;
-        let mut num_consumed: usize = 0;
+        let buf_len = buf.len();
         while let Some(mut i) = buf.iter().position(|ch| *ch == b'\n') {
             i += 1;
-            let mut line = Vec::new();
-            line.extend_from_slice(format!("n{}: ", node).as_bytes());
-            line.extend_from_slice(&buf[..i]);
-            std::io::stderr().write_all(&line)?;
-            num_consumed += i;
+            self.line.append(&buf[..i], node);
+            self.line.print()?;
             buf = &buf[i..];
         }
-        self.reader.consume(num_consumed);
+        if !buf.is_empty() {
+            self.line.append(buf, node);
+        }
+        self.reader.consume(buf_len);
         Ok(())
     }
 
-    pub(crate) fn print_remaining(&mut self, node: usize) -> Result<(), std::io::Error> {
-        let buf = self.reader.buffer();
-        if buf.is_empty() {
-            return Ok(());
+    pub(crate) fn print_remaining(&mut self, i: usize) -> Result<(), std::io::Error> {
+        if !self.line.is_empty() {
+            self.line.append("⏎\n".as_bytes(), i);
+            self.line.print()?;
         }
-        let mut line = Vec::new();
-        line.extend_from_slice(format!("n{}: ", node).as_bytes());
-        line.extend_from_slice(buf);
-        line.push(b'\n');
-        std::io::stderr().write_all(&line)?;
-        self.reader.consume(buf.len());
+        Ok(())
+    }
+}
+
+struct LineBuffer {
+    line: Vec<u8>,
+}
+
+impl LineBuffer {
+    fn new() -> Self {
+        Self { line: Vec::new() }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.line.is_empty()
+    }
+
+    fn append(&mut self, buf: &[u8], i: usize) {
+        if self.line.is_empty() {
+            self.line.extend_from_slice(format!("n{}: ", i).as_bytes());
+        }
+        self.line.extend_from_slice(buf);
+    }
+
+    fn print(&mut self) -> Result<(), std::io::Error> {
+        std::io::stderr().write_all(&self.line)?;
+        self.line.clear();
         Ok(())
     }
 }
@@ -353,3 +375,4 @@ fn status_is_failure(status: WaitStatus) -> bool {
 const WAKE_TOKEN: Token = Token(usize::MAX);
 const NUM_FDS: usize = 4;
 pub(crate) const MAX_MESSAGE_SIZE: usize = 4096 * 16;
+pub(crate) const OUTPUT_BUFFER_SIZE: usize = 4096 * 16;

@@ -44,7 +44,6 @@ fn do_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // TODO write each node's env variables to a separate file
     // TODO netlink is slow (non-blocking?)
-    // TODO prefix output with node name
     let config = NetConfig {
         callback: |context| {
             let node = context.current_node();
