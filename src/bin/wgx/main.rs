@@ -137,9 +137,6 @@ enum HubCommand {
         /// Export as QR-code.
         #[clap(long, action)]
         qr: bool,
-        /// Synchronize the list of spokes with the relay.
-        #[clap(long, action)]
-        sync: bool,
     },
     /// Remove existing spoke from the hub.
     RemoveSpoke {
@@ -305,7 +302,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 sync_spoke_public_keys(&config)?;
                 Ok(ExitCode::SUCCESS)
             }
-            HubCommand::AddSpoke { qr, sync } => {
+            HubCommand::AddSpoke { qr } => {
                 let mut config = Config::load(config_file.as_path())?;
                 let private_key = PrivateKey::random();
                 let public_key: PublicKey = (&private_key).into();
@@ -345,9 +342,6 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     persistent_keepalive: Duration::ZERO,
                 });
                 config.save()?;
-                if sync {
-                    sync_spoke_public_keys(&config)?;
-                }
                 if qr {
                     let qrcode = QrCode::with_error_correction_level(&wg_config, EcLevel::H)?;
                     print!("{}", qrcode_to_string(qrcode));

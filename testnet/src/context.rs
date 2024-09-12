@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use crate::log_format;
 use crate::IpcClient;
 use crate::IpcMessage;
 use crate::NodeConfig;
@@ -124,7 +125,7 @@ impl Context {
 
     fn print_step(&mut self) {
         if let Some(step) = self.step_name.take() {
-            log::info!("step {step}: ok");
+            log_format!("step {step}: ok");
         }
     }
 }
@@ -132,7 +133,7 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         if let Some(step) = self.step_name.take() {
-            log::error!("step {step}: failed");
+            log_format!("step {step}: failed");
         }
     }
 }

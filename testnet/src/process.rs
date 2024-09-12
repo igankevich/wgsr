@@ -5,7 +5,6 @@ use std::os::fd::AsRawFd;
 use std::os::fd::BorrowedFd;
 use std::os::fd::RawFd;
 
-use log::error;
 use mio_pidfd::PidFd;
 use nix::errno::Errno;
 use nix::poll::poll;
@@ -19,6 +18,8 @@ use nix::sys::wait::waitpid;
 use nix::sys::wait::WaitStatus;
 use nix::unistd::setpgid;
 use nix::unistd::Pid;
+
+use crate::log_format;
 
 pub(crate) struct Process {
     id: Pid,
@@ -78,14 +79,14 @@ impl Drop for Process {
             Ok(_) => {}
             Err(Errno::ESRCH) => return,
             Err(e) => {
-                error!("failed to kill process group {}: {}", self.id, e);
+                log_format!("failed to kill process group {}: {}", self.id, e);
                 return;
             }
         }
         match self.wait() {
             Ok(_) => {}
             Err(Errno::ECHILD) => {}
-            Err(e) => error!("failed to wait for process {}: {}", self.id, e),
+            Err(e) => log_format!("failed to wait for process {}: {}", self.id, e),
         }
     }
 }
@@ -101,7 +102,7 @@ unsafe fn clone<F: FnOnce() -> c_int>(
         // make all child processes belong to the same process group
         let this = Pid::this();
         if let Err(e) = setpgid(this, this) {
-            error!("failed to set process group to {}: {}", this, e);
+            log_format!("failed to set process group to {}: {}", this, e);
             return 1;
         }
         unsafe {
@@ -143,14 +144,14 @@ fn close_unused_fds(inherited_fds: Vec<RawFd>) {
             })
             .collect();
         if let Err(e) = poll(&mut fds, PollTimeout::ZERO) {
-            error!("poll failed: {e}");
+            log_format!("poll failed: {e}");
             continue;
         }
         for fd in fds.iter() {
             if let Some(revents) = fd.revents() {
                 if !revents.contains(PollFlags::POLLNVAL) {
                     if let Err(e) = nix::unistd::close(fd.as_fd().as_raw_fd()) {
-                        error!("close failed: {e}");
+                        log_format!("close failed: {e}");
                     }
                 }
             }

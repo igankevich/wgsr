@@ -7,7 +7,6 @@ use std::os::fd::AsRawFd;
 use std::os::fd::BorrowedFd;
 use std::os::fd::OwnedFd;
 
-use log::error;
 use mio::event::Event;
 use mio::unix::SourceFd;
 use mio::Events;
@@ -25,6 +24,7 @@ use nix::sys::wait::WaitPidFlag;
 use nix::sys::wait::WaitStatus;
 
 use crate::format_error;
+use crate::log_format;
 use crate::IpcClient;
 use crate::IpcStateMachine;
 
@@ -117,7 +117,7 @@ impl IpcServer {
                     Token(i) => Err(format_error!("unknown event {i}")),
                 };
                 if let Err(e) = ret {
-                    error!("ipc server error: {}", e);
+                    log_format!("ipc server error: {}", e);
                 }
             }
         }

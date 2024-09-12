@@ -683,7 +683,6 @@ dependencies = [
  "bincode",
  "clap",
  "ipnet",
- "log",
  "mio 1.0.2",
  "mio-pidfd",
  "netlink-packet-core",
