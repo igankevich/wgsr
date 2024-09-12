@@ -13,6 +13,7 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
+use ipnet::IpNet;
 use qrencode::EcLevel;
 use qrencode::QrCode;
 use wgproto::PresharedKey;
@@ -298,27 +299,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let config_file = config_file.as_path();
                 let mut config = Config::load(config_file)?;
                 sync_relay_public_key(&mut config)?;
-                let (relay_ip_addr, peers_public_keys) =
-                    config.get_relay_ip_addr_and_peers_public_keys()?;
-                eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
-                if peers_public_keys.is_empty() {
-                    return Ok(ExitCode::SUCCESS);
-                }
-                let endpoint = Endpoint::IpAddr(relay_ip_addr);
-                let mut client = WgxClient::new(endpoint)?;
-                client.retry(|client| client.set_peers(&peers_public_keys))?;
-                eprintln!(
-                    "✓ Published peers: {}",
-                    peers_public_keys
-                        .iter()
-                        .fold(String::with_capacity(4096), |mut a, b| {
-                            if !a.is_empty() {
-                                a.push_str(", ");
-                            }
-                            a.push_str(&b.to_base64());
-                            a
-                        })
-                );
+                sync_spoke_public_keys(&config)?;
                 Ok(ExitCode::SUCCESS)
             }
             HubCommand::AddSpoke { qr } => {
@@ -327,39 +308,35 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let public_key: PublicKey = (&private_key).into();
                 let preshared_key = PresharedKey::random();
                 let mut wg_config: Vec<u8> = Vec::with_capacity(4096);
+                let ip_address = config.random_ip_address()?;
                 InterfaceConfig {
                     private_key,
-                    address: config.random_ip_address()?,
+                    address: IpNet::new(ip_address.addr(), config.interface.address.prefix_len())?,
                     fwmark: Default::default(),
                     listen_port: Default::default(),
                 }
-                .write_wireguard_config(&mut wg_config)?;
+                .write_wireguard_config_ext(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
                 let relay_endpoint = config.get_relay_endpoint()?;
+                // hub
                 PeerConfig {
                     public_key: (&config.interface.private_key).into(),
-                    preshared_key: PresharedKey::random(),
+                    preshared_key: Some(preshared_key.clone()),
                     allowed_ips: Some(allowed_ip_any()),
                     endpoint: Some(relay_endpoint.clone()),
                     persistent_keepalive: Duration::ZERO,
                 }
                 .write_wireguard_config(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
-                let mut client = WgxClient::new(relay_endpoint)?;
-                let relay_public_key = client.retry(|client| client.get_public_key())?;
-                let ip_address = config.random_ip_address()?;
-                PeerConfig {
-                    public_key: relay_public_key,
-                    preshared_key: preshared_key.clone(),
-                    allowed_ips: None,
-                    endpoint: Some(relay_endpoint.clone()),
-                    persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
-                }
-                .write_wireguard_config(&mut wg_config)?;
+                // relay
+                config
+                    .get_relay_peer_config()
+                    .ok_or_else(|| format_error!("no relay is configured"))?
+                    .write_wireguard_config(&mut wg_config)?;
                 writeln!(&mut wg_config)?;
                 config.peers.push(PeerConfig {
                     public_key,
-                    preshared_key,
+                    preshared_key: Some(preshared_key),
                     allowed_ips: Some(ip_address),
                     endpoint: None,
                     persistent_keepalive: Duration::ZERO,
@@ -417,7 +394,7 @@ fn do_main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let relay_endpoint = config.get_relay_endpoint()?;
                 config.peers.push(PeerConfig {
                     public_key,
-                    preshared_key,
+                    preshared_key: Some(preshared_key),
                     allowed_ips: Some(allowed_ip_any()),
                     endpoint: Some(relay_endpoint.clone()),
                     persistent_keepalive: Duration::ZERO,
@@ -472,6 +449,30 @@ fn sync_relay_public_key(config: &mut Config) -> Result<(), Error> {
         eprintln!("✓ Updated relay public key");
         wg_reload(config)?;
     }
+    Ok(())
+}
+
+fn sync_spoke_public_keys(config: &Config) -> Result<(), Error> {
+    let (relay_ip_addr, peers_public_keys) = config.get_relay_ip_addr_and_peers_public_keys()?;
+    eprintln!("✓ Relay inner IP address: {}", relay_ip_addr);
+    if peers_public_keys.is_empty() {
+        return Ok(());
+    }
+    let endpoint = Endpoint::IpAddr(relay_ip_addr);
+    let mut client = WgxClient::new(endpoint)?;
+    client.retry(|client| client.set_peers(&peers_public_keys))?;
+    eprintln!(
+        "✓ Published peers: {}",
+        peers_public_keys
+            .iter()
+            .fold(String::with_capacity(4096), |mut a, b| {
+                if !a.is_empty() {
+                    a.push_str(", ");
+                }
+                a.push_str(&b.to_base64());
+                a
+            })
+    );
     Ok(())
 }
 

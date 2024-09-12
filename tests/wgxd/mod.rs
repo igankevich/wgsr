@@ -3,6 +3,7 @@
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::net::UdpSocket;
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
@@ -23,11 +24,14 @@ pub struct Wgxd {
 
 impl Wgxd {
     pub fn new() -> Self {
+        Self::with_port(random_port())
+    }
+
+    fn with_port(listen_port: NonZeroU16) -> Self {
         use std::fmt::Write;
         let workdir = tempdir().unwrap();
         let config_file = workdir.path().join("wgxd.conf");
         let unix_socket_path = workdir.path().join(".wgxd-socket");
-        let listen_port = random_port();
         let mut config = String::new();
         writeln!(
             &mut config,
@@ -45,7 +49,7 @@ impl Wgxd {
         Self {
             workdir,
             unix_socket_path,
-            listen_port,
+            listen_port: listen_port.into(),
             child,
         }
     }
@@ -95,12 +99,14 @@ impl Drop for Wgxd {
     }
 }
 
-fn random_port() -> u16 {
+fn random_port() -> NonZeroU16 {
     UdpSocket::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port()
+        .try_into()
+        .unwrap()
 }
 
 #[macro_export]

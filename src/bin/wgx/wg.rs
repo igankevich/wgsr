@@ -1,6 +1,8 @@
 use std::process::Command;
 use std::process::Stdio;
 
+use ipnet::IpNet;
+
 use crate::ChildHR;
 use crate::CommandHR;
 use crate::Error;
@@ -24,7 +26,7 @@ impl Wg {
         self.ip_link_add()?;
         self.ip_link_set_up()?;
         self.ip_address_add(interface)?;
-        self.ip_route_add(interface)?;
+        //self.ip_route_add(interface)?;
         self.wg_conf("setconf", interface, peers)?;
         Ok(())
     }
@@ -93,11 +95,13 @@ impl Wg {
     }
 
     fn ip_route_add(&self, interface: &InterfaceConfig) -> Result<(), Error> {
+        let net = IpNet::new(interface.address.network(), interface.address.prefix_len())
+            .map_err(Error::map)?;
         Command::new("ip")
             .args([
                 "route",
                 "add",
-                interface.address.network().to_string().as_str(),
+                net.to_string().as_str(),
                 "dev",
                 self.name.as_str(),
             ])

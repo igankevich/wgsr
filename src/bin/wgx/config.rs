@@ -69,8 +69,7 @@ impl Config {
          -> Result<(), Error> {
             peers.push(PeerConfig {
                 public_key: public_key.ok_or_else(|| format_error!("missing `PublicKey`"))?,
-                preshared_key: preshared_key
-                    .ok_or_else(|| format_error!("missing `PresharedKey`"))?,
+                preshared_key,
                 allowed_ips,
                 endpoint,
                 persistent_keepalive: persistent_keepalive.unwrap_or(Duration::ZERO),
@@ -95,7 +94,7 @@ impl Config {
                 prev_section = section.map(ToString::to_string);
             }
             match section {
-                Some(section @ "Hub") => match key {
+                Some(section @ "Main") => match key {
                     "InterfaceName" => config.interface_name = value.parse().map_err(Error::map)?,
                     "RelayEndpoint" => {
                         config.relay.endpoint = Some(value.parse().map_err(Error::map)?)
@@ -202,29 +201,30 @@ impl Config {
         Ok(())
     }
 
-    #[allow(clippy::unwrap_used)]
+    pub(crate) fn get_relay_inner_ipaddr(&self) -> Result<IpAddr, Error> {
+        self.interface
+            .address
+            .hosts()
+            .nth(1)
+            .ok_or_else(|| format_error!("exhausted available IP addresses"))
+    }
+
     pub(crate) fn random_ip_address(&self) -> Result<IpNet, Error> {
         let mut addresses: HashSet<IpAddr> = HashSet::new();
         addresses.insert(self.interface.address.addr());
+        addresses.insert(
+            self.interface
+                .address
+                .hosts()
+                .nth(1)
+                .ok_or_else(|| format_error!("exhausted available IP addresses"))?,
+        );
         addresses.extend(
             self.peers
                 .iter()
                 .filter_map(|peer| peer.allowed_ips.map(|x| x.addr())),
         );
-        let n = self.interface.address.hosts().count();
-        if n == addresses.len() {
-            return Err(format_error!("exhausted available IP addresses"));
-        }
-        loop {
-            let i = OsRng.gen_range(0..n);
-            let address = match self.interface.address.hosts().nth(i) {
-                Some(address) => address,
-                None => continue,
-            };
-            if !addresses.contains(&address) {
-                return Ok(IpNet::new(address, self.interface.address.prefix_len()).unwrap());
-            }
-        }
+        random_ip_address(self.interface.address, &addresses)
     }
 
     pub(crate) fn get_relay_endpoint(&self) -> Result<&Endpoint, Error> {
@@ -240,11 +240,15 @@ impl Config {
         public_key: PublicKey,
     ) -> Result<(), Error> {
         if endpoint.is_some() {
+            let relay_inner_ipaddr = self.get_relay_inner_ipaddr()?;
             self.peers.retain(|peer| peer.public_key != public_key);
             self.peers.push(PeerConfig {
                 public_key,
-                preshared_key: [0_u8; 32].into(),
-                allowed_ips: Some(self.random_ip_address()?),
+                preshared_key: None,
+                allowed_ips: Some(IpNet::new(
+                    relay_inner_ipaddr,
+                    max_prefix_len(relay_inner_ipaddr),
+                )?),
                 endpoint: endpoint.clone(),
                 persistent_keepalive: DEFAULT_PERSISTENT_KEEPALIVE,
             });
@@ -258,6 +262,14 @@ impl Config {
 
     pub(crate) fn get_relay_public_key(&self) -> Option<&PublicKey> {
         self.relay.public_key.as_ref()
+    }
+
+    pub(crate) fn get_relay_peer_config(&self) -> Option<&PeerConfig> {
+        self.relay.public_key.as_ref().and_then(|public_key| {
+            self.peers
+                .iter()
+                .find(|peer| &peer.public_key == public_key)
+        })
     }
 
     pub(crate) fn get_relay_ip_addr_and_peers_public_keys(
@@ -319,7 +331,7 @@ pub(crate) fn allowed_ip_any() -> IpNet {
 
 impl Display for Config {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "[Hub]")?;
+        writeln!(f, "[Main]")?;
         writeln!(f, "InterfaceName = {}", self.interface_name)?;
         if let Some(relay_endpoint) = self.relay.endpoint.as_ref() {
             writeln!(f, "RelayEndpoint = {}", relay_endpoint)?;
@@ -361,6 +373,16 @@ impl InterfaceConfig {
         }
         Ok(())
     }
+
+    pub(crate) fn write_wireguard_config_ext(&self, out: &mut impl Write) -> Result<(), Error> {
+        self.write_wireguard_config(out)?;
+        if !self.address.addr().is_unspecified() {
+            writeln!(out, "Address = {}", self.address)?;
+        }
+        let public_key: PublicKey = (&self.private_key).into();
+        writeln!(out, "# PublicKey = {}", public_key.to_base64())?;
+        Ok(())
+    }
 }
 
 impl Display for InterfaceConfig {
@@ -380,7 +402,7 @@ impl Display for InterfaceConfig {
 
 pub(crate) struct PeerConfig {
     pub(crate) public_key: PublicKey,
-    pub(crate) preshared_key: PresharedKey,
+    pub(crate) preshared_key: Option<PresharedKey>,
     pub(crate) allowed_ips: Option<IpNet>,
     pub(crate) endpoint: Option<Endpoint>,
     pub(crate) persistent_keepalive: Duration,
@@ -390,8 +412,8 @@ impl PeerConfig {
     pub(crate) fn write_wireguard_config(&self, out: &mut impl Write) -> Result<(), Error> {
         writeln!(out, "[Peer]")?;
         writeln!(out, "PublicKey = {}", self.public_key.to_base64())?;
-        if self.preshared_key.as_bytes().iter().any(|b| b != &0) {
-            writeln!(out, "PresharedKey = {}", self.preshared_key.to_base64())?;
+        if let Some(preshared_key) = self.preshared_key.as_ref() {
+            writeln!(out, "PresharedKey = {}", preshared_key.to_base64())?;
         }
         if let Some(allowed_ips) = self.allowed_ips {
             writeln!(out, "AllowedIPs = {}", allowed_ips)?;
@@ -414,7 +436,9 @@ impl Display for PeerConfig {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "[Peer]")?;
         writeln!(f, "PublicKey = {}", self.public_key.to_base64())?;
-        writeln!(f, "PresharedKey = {}", self.preshared_key.to_base64())?;
+        if let Some(preshared_key) = self.preshared_key.as_ref() {
+            writeln!(f, "PresharedKey = {}", preshared_key.to_base64())?;
+        }
         if let Some(allowed_ips) = self.allowed_ips {
             writeln!(f, "AllowedIPs = {}", allowed_ips)?;
         }
@@ -429,6 +453,30 @@ impl Display for PeerConfig {
             )?;
         }
         Ok(())
+    }
+}
+
+fn random_ip_address(network: IpNet, addresses: &HashSet<IpAddr>) -> Result<IpNet, Error> {
+    let n = network.hosts().count();
+    if n == addresses.len() {
+        return Err(format_error!("exhausted available IP addresses"));
+    }
+    loop {
+        let i = OsRng.gen_range(0..n);
+        let address = match network.hosts().nth(i) {
+            Some(address) => address,
+            None => continue,
+        };
+        if !addresses.contains(&address) {
+            return Ok(IpNet::new(address, max_prefix_len(address))?);
+        }
+    }
+}
+
+fn max_prefix_len(ipaddr: IpAddr) -> u8 {
+    match ipaddr {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 64,
     }
 }
 
@@ -454,6 +502,28 @@ mod tests {
             assert_eq!(expected, actual);
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_random_ip_address() {
+        assert_eq!(
+            IpNet::new(Ipv4Addr::new(10, 0, 0, 1).into(), 32).unwrap(),
+            random_ip_address(
+                IpNet::new(Ipv4Addr::new(10, 0, 0, 1).into(), 32).unwrap(),
+                &Default::default(),
+            )
+            .unwrap()
+        );
+        assert!(random_ip_address(
+            IpNet::new(Ipv4Addr::new(10, 0, 0, 1).into(), 32).unwrap(),
+            &HashSet::from([Ipv4Addr::new(10, 0, 0, 1).into()]),
+        )
+        .is_err());
+        assert!(random_ip_address(
+            IpNet::new(Ipv4Addr::new(0, 0, 0, 0).into(), 0).unwrap(),
+            &Default::default(),
+        )
+        .is_ok());
     }
 
     impl<'a> Arbitrary<'a> for Config {
@@ -514,7 +584,7 @@ mod tests {
         fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self, arbitrary::Error> {
             Ok(Self {
                 public_key: u.arbitrary::<[u8; 32]>()?.into(),
-                preshared_key: u.arbitrary::<[u8; 32]>()?.into(),
+                preshared_key: u.arbitrary::<Option<[u8; 32]>>()?.map(Into::into),
                 allowed_ips: u.arbitrary::<Option<ArbitraryIpNet>>()?.map(|x| x.0),
                 endpoint: u.arbitrary()?,
                 persistent_keepalive: Duration::from_secs(u.arbitrary()?),
@@ -526,7 +596,10 @@ mod tests {
         fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
             f.debug_struct("PeerConfig")
                 .field("public_key", &self.public_key.to_base64())
-                .field("preshared_key", &self.preshared_key.to_base64())
+                .field(
+                    "preshared_key",
+                    &self.preshared_key.as_ref().map(|x| x.to_base64()),
+                )
                 .field("allowed_ips", &self.allowed_ips)
                 .field("endpoint", &self.endpoint)
                 .field("persistent_keepalive", &self.persistent_keepalive)
@@ -537,7 +610,8 @@ mod tests {
     impl PartialEq for PeerConfig {
         fn eq(&self, other: &Self) -> bool {
             self.public_key.as_bytes() == other.public_key.as_bytes()
-                && self.preshared_key.as_bytes() == other.preshared_key.as_bytes()
+                && self.preshared_key.as_ref().map(|x| x.as_bytes())
+                    == other.preshared_key.as_ref().map(|x| x.as_bytes())
                 && self.allowed_ips == other.allowed_ips
                 && self.endpoint == other.endpoint
                 && self.persistent_keepalive == other.persistent_keepalive
