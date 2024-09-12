@@ -257,7 +257,7 @@ fn do_network_node_main<F: FnOnce(Context) -> CallbackResult>(
     dup2(output_fd, 1)?;
     dup2(output_fd, 2)?;
     // clonse stdin
-    nix::unistd::close(0)?;
+    //nix::unistd::close(0)?;
     set_process_name(&nodes[i].name)?;
     sethostname(&nodes[i].name)?;
     // wait for veth to be trasnferred to this process' network namespace
