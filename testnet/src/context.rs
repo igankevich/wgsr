@@ -125,7 +125,7 @@ impl Context {
 
     fn print_step(&mut self) {
         if let Some(step) = self.step_name.take() {
-            log_format!("step {step}: ok");
+            log_format!("step {}: ok", step);
         }
     }
 }
@@ -133,7 +133,7 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         if let Some(step) = self.step_name.take() {
-            log_format!("step {step}: failed");
+            log_format!("step {}: failed", step);
         }
     }
 }

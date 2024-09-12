@@ -68,7 +68,8 @@ impl PipeSender {
         Self { fd_in, fd_out }
     }
 
-    pub(crate) fn close(self) {
-        // drop self
+    pub(crate) fn close(mut self) -> Result<(), std::io::Error> {
+        nix::unistd::write(&mut self.fd_out, &[1])?;
+        Ok(())
     }
 }

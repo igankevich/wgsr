@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     match do_main() {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            log_format!("{e}");
+            log_format!("{}", e);
             ExitCode::FAILURE
         }
     }

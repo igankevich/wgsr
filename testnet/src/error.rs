@@ -1,7 +1,20 @@
 #[macro_export]
 macro_rules! log_format {
-    ($($args:expr),*) => {
-        { let _ = ::std::io::Write::write_all(&mut ::std::io::stderr(), format!($($args),*).as_bytes()); }
+    ($fmt_str:literal) => {
+        {
+            let _ = ::std::io::Write::write_all(
+                &mut ::std::io::stderr(),
+                format!(concat!($fmt_str, "\n")).as_bytes()
+            );
+        }
+    };
+    ($fmt_str:literal, $($args:expr),*) => {
+        {
+            let _ = ::std::io::Write::write_all(
+                &mut ::std::io::stderr(),
+                format!(concat!($fmt_str, "\n"), $($args),*).as_bytes()
+            );
+        }
     };
 }
 
