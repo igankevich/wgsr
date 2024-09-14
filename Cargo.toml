@@ -1,6 +1,6 @@
 [package]
 name = "wgx"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 license = "GPL-3.0"
 
@@ -23,6 +23,7 @@ static_assertions = { version = "1.1.0", features = [], default-features = false
 wgproto = { version = "0.4.1", tag = "0.4.1", git = "https://github.com/igankevich/wgproto" }
 x25519-dalek = { version = "2.0.1", features = ["serde"] }
 testnet = { path = "testnet" }
+human-units = "0.1.2"
 
 [dev-dependencies]
 arbitrary = { version = "1.3.2", features = ["derive", "derive_arbitrary"] }
