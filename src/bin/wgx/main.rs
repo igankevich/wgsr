@@ -13,6 +13,10 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
+use human_units::FormatDuration;
+use human_units::FormatSize;
+use human_units::FormattedDuration;
+use human_units::FormattedSize;
 use ipnet::IpNet;
 use qrencode::EcLevel;
 use qrencode::QrCode;
@@ -35,7 +39,6 @@ use self::endpoint::*;
 use self::error::*;
 use self::interface_name::*;
 use self::qrcode::*;
-use self::units::*;
 use self::unix::*;
 use self::wg::*;
 use self::wgx_client::*;
@@ -46,7 +49,6 @@ mod endpoint;
 mod error;
 mod interface_name;
 mod qrcode;
-mod units;
 mod unix;
 mod wg;
 mod wgx_client;
@@ -580,7 +582,7 @@ fn print_sessions(sessions: &Sessions) {
 
 fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: SystemTime) -> String {
     match now.duration_since(latest_handshake) {
-        Ok(d) => format!("{} ago", ColoredDuration(format_duration(d))),
+        Ok(d) => format!("{} ago", ColoredDuration(d.format_duration())),
         Err(_) => default.to_string(),
     }
 }
@@ -588,14 +590,14 @@ fn format_latest_handshake(latest_handshake: SystemTime, default: &str, now: Sys
 fn format_transfer(received: u64, sent: u64) -> String {
     format!(
         "{} received, {} sent",
-        ColoredBytes(format_bytes(received)),
-        ColoredBytes(format_bytes(sent))
+        ColoredSize(received.format_size()),
+        ColoredSize(sent.format_size())
     )
 }
 
-struct ColoredBytes(FormatBytes);
+struct ColoredSize(FormattedSize);
 
-impl Display for ColoredBytes {
+impl Display for ColoredSize {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0.integer)?;
         if self.0.fraction != 0 {
@@ -605,7 +607,7 @@ impl Display for ColoredBytes {
     }
 }
 
-struct ColoredDuration(FormatDuration);
+struct ColoredDuration(FormattedDuration);
 
 impl Display for ColoredDuration {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
